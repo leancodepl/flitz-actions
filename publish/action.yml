@@ -1,0 +1,255 @@
+name: Publish with Flitz
+description: Build the project's app with flitz publish and expose the publish id and URLs.
+
+inputs:
+  api-key:
+    description: The organization API key, from a repository secret. Passed only to the step that runs flitz publish.
+    required: true
+  flitz-path:
+    description: The project's pin file. Relative to the workspace root; flitz publish runs from its directory.
+    required: false
+    default: flitz.yaml
+  app:
+    description: The Flutter application directory, forwarded as --app. Empty builds the app at the pin file's directory.
+    required: false
+    default: ""
+  target:
+    description: The Dart entry-point file, relative to the app directory, forwarded as --target. Empty builds lib/main.dart.
+    required: false
+    default: ""
+  target-platform:
+    description: Forwarded as --target-platform. Empty uses the CLI's default for the build host.
+    required: false
+    default: ""
+  dart-define:
+    description: Compile-time constants, one KEY=VALUE per line, each forwarded as one --dart-define.
+    required: false
+    default: ""
+  dart-define-from-file:
+    description: Constant files (.json or .env), one path per line, each forwarded as one --dart-define-from-file. Relative to the workspace root.
+    required: false
+    default: ""
+  schema:
+    description: The deeplink URL scheme, forwarded as --schema. Empty uses the CLI's default, flitz.
+    required: false
+    default: ""
+  name:
+    description: Display title for the publish, forwarded as --name. At most 120 characters.
+    required: false
+    default: ""
+  version-name:
+    description: Version label for the publish, forwarded as --version-name. At most 64 characters.
+    required: false
+    default: ""
+  comment:
+    description: Free-text comment for the publish, forwarded as --comment. At most 1000 characters.
+    required: false
+    default: ""
+
+outputs:
+  id:
+    description: The publish record's opaque id.
+    value: ${{ steps.result.outputs.id }}
+  page-url:
+    description: The landing page's download URL.
+    value: ${{ steps.result.outputs.page-url }}
+  deeplink:
+    description: The <schema>://download?url=… deeplink the landing page and the QR encode.
+    value: ${{ steps.result.outputs.deeplink }}
+  bundle-url:
+    description: The .flitz bundle's download URL.
+    value: ${{ steps.result.outputs.bundle-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Detect host
+      id: host
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        case "${RUNNER_OS}/${RUNNER_ARCH}" in
+          Linux/X64) host=linux-x64 ;;
+          macOS/ARM64) host=macos-arm64 ;;
+          *)
+            echo "unsupported runner ${RUNNER_OS}/${RUNNER_ARCH}" >&2
+            echo "  -> supported runners: Linux/X64 (linux-x64), macOS/ARM64 (macos-arm64)" >&2
+            exit 1
+            ;;
+        esac
+
+        echo "host=${host}" >> "$GITHUB_OUTPUT"
+
+    - name: Require the flitz CLI
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if ! command -v flitz > /dev/null 2>&1; then
+          echo "the flitz CLI is not on PATH" >&2
+          echo "  -> run the install-cli action first" >&2
+          exit 1
+        fi
+
+    - name: Resolve the pin
+      id: pin
+      shell: bash
+      env:
+        FLITZ_PATH: ${{ inputs.flitz-path }}
+      run: |
+        set -euo pipefail
+
+        if [[ "$FLITZ_PATH" = /* ]]; then
+          pin="$FLITZ_PATH"
+        else
+          pin="${GITHUB_WORKSPACE}/${FLITZ_PATH}"
+        fi
+
+        if [[ ! -f "$pin" ]]; then
+          echo "${pin} is not a flitz.yaml" >&2
+          echo "  -> run 'flitz sdk use <tag>' in the project, or point flitz-path at its flitz.yaml" >&2
+          exit 1
+        fi
+
+        echo "dir=$(dirname "$pin")" >> "$GITHUB_OUTPUT"
+
+    - name: Check credential
+      shell: bash
+      env:
+        API_KEY: ${{ inputs.api-key }}
+      run: |
+        set -euo pipefail
+
+        if [[ -z "$API_KEY" ]]; then
+          echo "no Flitz credential was given" >&2
+          echo "  -> pass the organization API key as the api-key input, from a repository secret" >&2
+          exit 1
+        fi
+
+        echo "::add-mask::${API_KEY}"
+
+    - name: Publish
+      id: publish
+      shell: bash
+      working-directory: ${{ steps.pin.outputs.dir }}
+      env:
+        FLITZ_APIKEY: ${{ inputs.api-key }}
+        APP: ${{ inputs.app }}
+        TARGET: ${{ inputs.target }}
+        TARGET_PLATFORM: ${{ inputs.target-platform }}
+        DART_DEFINES: ${{ inputs.dart-define }}
+        DART_DEFINE_FILES: ${{ inputs.dart-define-from-file }}
+        SCHEMA: ${{ inputs.schema }}
+        NAME: ${{ inputs.name }}
+        VERSION_NAME: ${{ inputs.version-name }}
+        COMMENT: ${{ inputs.comment }}
+      run: |
+        set -euo pipefail
+
+        args=(publish --yes --json)
+
+        if [[ -n "$APP" ]]; then
+          if [[ "$APP" = /* ]]; then
+            app="$APP"
+          else
+            app="${GITHUB_WORKSPACE}/${APP}"
+          fi
+          args+=(--app "$app")
+        fi
+
+        if [[ -n "$TARGET" ]]; then
+          args+=(--target "$TARGET")
+        fi
+
+        if [[ -n "$TARGET_PLATFORM" ]]; then
+          args+=(--target-platform "$TARGET_PLATFORM")
+        fi
+
+        while IFS= read -r define || [[ -n "$define" ]]; do
+          define="${define%$'\r'}"
+          if [[ -n "$define" ]]; then
+            args+=(--dart-define "$define")
+          fi
+        done <<< "$DART_DEFINES"
+
+        # The step runs from the project directory, so a relative path would otherwise resolve there.
+        while IFS= read -r file || [[ -n "$file" ]]; do
+          file="${file%$'\r'}"
+          if [[ -z "$file" ]]; then
+            continue
+          fi
+          if [[ "$file" != /* ]]; then
+            file="${GITHUB_WORKSPACE}/${file}"
+          fi
+          args+=(--dart-define-from-file "$file")
+        done <<< "$DART_DEFINE_FILES"
+
+        if [[ -n "$SCHEMA" ]]; then
+          args+=(--schema "$SCHEMA")
+        fi
+
+        if [[ -n "$NAME" ]]; then
+          args+=(--name "$NAME")
+        fi
+
+        if [[ -n "$VERSION_NAME" ]]; then
+          args+=(--version-name "$VERSION_NAME")
+        fi
+
+        if [[ -n "$COMMENT" ]]; then
+          args+=(--comment "$COMMENT")
+        fi
+
+        flitz "${args[@]}" > "${RUNNER_TEMP}/flitz-publish.json"
+
+    - name: Expose the result
+      id: result
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+      run: |
+        set -euo pipefail
+
+        result="${RUNNER_TEMP}/flitz-publish.json"
+
+        for field in id page_url deeplink bundle_url; do
+          if ! jq -e --arg f "$field" 'has($f) and (.[$f] | type == "string")' "$result" > /dev/null; then
+            echo "the publish result names no ${field}" >&2
+            exit 1
+          fi
+        done
+
+        id="$(jq -r '.id' "$result")"
+        page_url="$(jq -r '.page_url' "$result")"
+        deeplink="$(jq -r '.deeplink' "$result")"
+        bundle_url="$(jq -r '.bundle_url' "$result")"
+
+        {
+          echo "id<<FLITZ_OUTPUT_EOF"
+          echo "$id"
+          echo "FLITZ_OUTPUT_EOF"
+          echo "page-url<<FLITZ_OUTPUT_EOF"
+          echo "$page_url"
+          echo "FLITZ_OUTPUT_EOF"
+          echo "deeplink<<FLITZ_OUTPUT_EOF"
+          echo "$deeplink"
+          echo "FLITZ_OUTPUT_EOF"
+          echo "bundle-url<<FLITZ_OUTPUT_EOF"
+          echo "$bundle_url"
+          echo "FLITZ_OUTPUT_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        {
+          echo "### Flitz publish"
+          echo
+          echo "| | |"
+          echo "|---|---|"
+          echo "| Landing page | ${page_url} |"
+          echo "| Bundle | ${bundle_url} |"
+          echo "| Deeplink | \`${deeplink}\` |"
+          echo "| Publish id | \`${id}\` |"
+          if [[ -n "$TARGET" ]]; then
+            echo "| Entrypoint | \`${TARGET}\` |"
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"

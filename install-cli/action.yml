@@ -1,0 +1,146 @@
+name: Install Flitz CLI
+description: Download the public flitz CLI for the runner's host, verify it, and put it on PATH.
+
+inputs:
+  cli-version:
+    description: A CLI semantic version (0.1.0, 1.5.0-rc.1), or `latest`.
+    required: false
+    default: latest
+  base-url:
+    description: The public download host serving the CLI artifacts.
+    required: false
+    default: https://download.flitz.dev
+
+outputs:
+  version:
+    description: The concrete version installed, with `latest` already resolved.
+    value: ${{ steps.resolve.outputs.version }}
+  path:
+    description: The absolute path of the installed flitz executable.
+    value: ${{ steps.install.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Detect host
+      id: host
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        case "${RUNNER_OS}/${RUNNER_ARCH}" in
+          Linux/X64) host=linux-x64 ;;
+          macOS/ARM64) host=macos-arm64 ;;
+          *)
+            echo "unsupported runner ${RUNNER_OS}/${RUNNER_ARCH}" >&2
+            echo "  -> supported runners: Linux/X64 (linux-x64), macOS/ARM64 (macos-arm64)" >&2
+            exit 1
+            ;;
+        esac
+
+        echo "host=${host}" >> "$GITHUB_OUTPUT"
+
+    - name: Resolve release
+      id: resolve
+      shell: bash
+      env:
+        CLI_VERSION: ${{ inputs.cli-version }}
+        BASE_URL: ${{ inputs.base-url }}
+        HOST: ${{ steps.host.outputs.host }}
+      run: |
+        set -euo pipefail
+
+        base_url="${BASE_URL%/}"
+
+        if [[ "$CLI_VERSION" == *-flz.* || "$CLI_VERSION" == *+flz.* ]]; then
+          echo "cli-version '${CLI_VERSION}' is a Flitz release tag, not a CLI version" >&2
+          echo "  -> pass a Flitz release tag as flitz-version" >&2
+          exit 1
+        fi
+
+        if [[ "$CLI_VERSION" == "latest" ]]; then
+          manifest_url="${base_url}/cli.json"
+        elif [[ "$CLI_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+          manifest_url="${base_url}/cli/${CLI_VERSION}/cli-release.json"
+        else
+          echo "cli-version '${CLI_VERSION}' is not a version" >&2
+          echo "  -> expected MAJOR.MINOR.PATCH with an optional pre-release suffix, or 'latest'" >&2
+          exit 1
+        fi
+
+        if ! manifest="$(curl --fail --silent --show-error --location --retry 3 --retry-all-errors "$manifest_url")"; then
+          if [[ "$CLI_VERSION" == "latest" ]]; then
+            echo "could not read the CLI release index at ${manifest_url}" >&2
+          else
+            echo "CLI version '${CLI_VERSION}' is not published at ${base_url}" >&2
+            echo "  -> see ${base_url}/ for the published versions" >&2
+          fi
+          exit 1
+        fi
+
+        if ! version="$(jq -er '.version' <<<"$manifest")"; then
+          echo "the manifest at ${manifest_url} names no version" >&2
+          exit 1
+        fi
+
+        if ! entry="$(jq -e --arg host "$HOST" '.binaries[$host]' <<<"$manifest")"; then
+          echo "CLI ${version} publishes no binary for ${HOST}" >&2
+          exit 1
+        fi
+
+        url="$(jq -er '.url' <<<"$entry")"
+        sha256="$(jq -er '.sha256' <<<"$entry")"
+
+        {
+          echo "version=${version}"
+          echo "url=${url}"
+          echo "sha256=${sha256}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Install
+      id: install
+      shell: bash
+      env:
+        HOST: ${{ steps.host.outputs.host }}
+        URL: ${{ steps.resolve.outputs.url }}
+        EXPECTED_SHA256: ${{ steps.resolve.outputs.sha256 }}
+      run: |
+        set -euo pipefail
+
+        download="${RUNNER_TEMP}/flitz-cli"
+        curl --fail --silent --show-error --location --retry 3 --retry-all-errors "$URL" -o "$download"
+
+        case "$HOST" in
+          linux-x64) actual="$(sha256sum "$download" | cut -d ' ' -f 1)" ;;
+          macos-arm64) actual="$(shasum -a 256 "$download" | cut -d ' ' -f 1)" ;;
+        esac
+
+        if [[ "$actual" != "$EXPECTED_SHA256" ]]; then
+          echo "checksum mismatch on the downloaded flitz CLI" >&2
+          echo "  expected ${EXPECTED_SHA256}" >&2
+          echo "  actual   ${actual}" >&2
+          rm -f "$download"
+          exit 1
+        fi
+
+        install_dir="${HOME}/.local/bin"
+        mkdir -p "$install_dir"
+        mv -f "$download" "${install_dir}/flitz"
+        chmod +x "${install_dir}/flitz"
+
+        echo "$install_dir" >> "$GITHUB_PATH"
+        echo "path=${install_dir}/flitz" >> "$GITHUB_OUTPUT"
+
+    - name: Verify installed version
+      shell: bash
+      env:
+        FLITZ: ${{ steps.install.outputs.path }}
+        EXPECTED: ${{ steps.resolve.outputs.version }}
+      run: |
+        set -euo pipefail
+
+        reported="$("$FLITZ" --version)"
+        if [[ "$reported" != "$EXPECTED" ]]; then
+          echo "the installed flitz reports version '${reported}', expected '${EXPECTED}'" >&2
+          exit 1
+        fi

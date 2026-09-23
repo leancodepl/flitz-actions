@@ -1,0 +1,664 @@
+name: Flitz
+description: Install the flitz CLI and the pinned Flitz SDK, build and publish the app, and link it from the pull request.
+
+# The step bodies below mirror install/action.yml, publish/action.yml, and pr-comment/action.yml
+# rather than referencing them with a relative `uses:`. A relative local action inside a composite
+# action is resolved against the caller's workspace, which does not contain this repository when the
+# action is consumed from another repo.
+
+inputs:
+  cli-version:
+    description: A CLI semantic version (0.1.0, 1.5.0-rc.1), or `latest`.
+    required: false
+    default: latest
+  base-url:
+    description: The public download host serving the CLI artifacts.
+    required: false
+    default: https://download.flitz.dev
+  flitz-path:
+    description: The project's pin file, naming the SDK tag to install and the project to publish. Relative to the workspace root.
+    required: false
+    default: flitz.yaml
+  api-key:
+    description: The organization API key, from a repository secret. Passed only to the steps that run flitz.
+    required: true
+  cache:
+    description: Whether to restore and save the SDK cache.
+    required: false
+    default: "true"
+  pub-cache:
+    description: Whether to restore and save the pub dependency cache.
+    required: false
+    default: "true"
+  app:
+    description: The Flutter application directory, forwarded as --app. Empty builds the app at the pin file's directory.
+    required: false
+    default: ""
+  target:
+    description: The Dart entry-point file, relative to the app directory, forwarded as --target. Empty builds lib/main.dart.
+    required: false
+    default: ""
+  target-platform:
+    description: Forwarded as --target-platform. Empty uses the CLI's default for the build host.
+    required: false
+    default: ""
+  dart-define:
+    description: Compile-time constants, one KEY=VALUE per line, each forwarded as one --dart-define.
+    required: false
+    default: ""
+  dart-define-from-file:
+    description: Constant files (.json or .env), one path per line, each forwarded as one --dart-define-from-file. Relative to the workspace root.
+    required: false
+    default: ""
+  schema:
+    description: The deeplink URL scheme, forwarded as --schema. Empty uses the CLI's default, flitz.
+    required: false
+    default: ""
+  name:
+    description: Display title for the publish, forwarded as --name. At most 120 characters.
+    required: false
+    default: ""
+  version-name:
+    description: Version label for the publish, forwarded as --version-name. At most 64 characters.
+    required: false
+    default: ""
+  comment:
+    description: Free-text comment for the publish, forwarded as --comment. At most 1000 characters.
+    required: false
+    default: ""
+  pr-comment-key:
+    description: Identifies the pull-request comment among the Flitz comments on one pull request. Letters, digits, '.', '_', or '-'.
+    required: false
+    default: default
+  pr-comment-header:
+    description: The pull-request comment's heading text.
+    required: false
+    default: Flitz preview build
+  pr-comment-message:
+    description: Markdown inserted below the landing-page link in the pull-request comment.
+    required: false
+    default: ""
+  github-token:
+    description: The token the pull-request comment is posted and cleaned up with. Needs pull-requests write permission.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  cli-version:
+    description: The concrete CLI version installed, with `latest` already resolved.
+    value: ${{ steps.resolve-cli.outputs.version }}
+  flitz-version:
+    description: The resolved Flitz release tag.
+    value: ${{ steps.resolve-sdk.outputs.version }}
+  sdk-path:
+    description: The absolute path of the installed SDK root — a valid FLUTTER_ROOT.
+    value: ${{ steps.sdkpath.outputs.path }}
+  sdk-cache-hit:
+    description: Whether the SDK cache was restored.
+    value: ${{ steps.cache.outputs.cache-hit == 'true' }}
+  id:
+    description: The publish record's opaque id.
+    value: ${{ steps.result.outputs.id }}
+  page-url:
+    description: The landing page's download URL.
+    value: ${{ steps.result.outputs.page-url }}
+  deeplink:
+    description: The <schema>://download?url=… deeplink the landing page and the QR encode.
+    value: ${{ steps.result.outputs.deeplink }}
+  bundle-url:
+    description: The .flitz bundle's download URL.
+    value: ${{ steps.result.outputs.bundle-url }}
+  comment-url:
+    description: The HTML URL of the pull-request comment. Empty when the event is not a pull request.
+    value: ${{ steps.post.outputs.comment-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Detect host
+      id: host
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        case "${RUNNER_OS}/${RUNNER_ARCH}" in
+          Linux/X64) host=linux-x64 ;;
+          macOS/ARM64) host=macos-arm64 ;;
+          *)
+            echo "unsupported runner ${RUNNER_OS}/${RUNNER_ARCH}" >&2
+            echo "  -> supported runners: Linux/X64 (linux-x64), macOS/ARM64 (macos-arm64)" >&2
+            exit 1
+            ;;
+        esac
+
+        echo "host=${host}" >> "$GITHUB_OUTPUT"
+
+    - name: Resolve the pin
+      id: resolve-sdk
+      shell: bash
+      env:
+        FLITZ_PATH: ${{ inputs.flitz-path }}
+      run: |
+        set -euo pipefail
+
+        if [[ "$FLITZ_PATH" = /* ]]; then
+          pin="$FLITZ_PATH"
+        else
+          pin="${GITHUB_WORKSPACE}/${FLITZ_PATH}"
+        fi
+
+        if [[ ! -f "$pin" ]]; then
+          echo "${pin} is not a flitz.yaml" >&2
+          echo "  -> run 'flitz sdk use <tag>' in the project, or point flitz-path at its flitz.yaml" >&2
+          exit 1
+        fi
+
+        tag="$(sed -n 's/^sdk:[[:space:]]*//p' "$pin" | head -n 1)"
+        tag="${tag%%#*}"
+        tag="$(printf '%s' "$tag" | tr -d '\r' | sed -e 's/[[:space:]]*$//' -e 's/^["'"'"']//' -e 's/["'"'"']$//')"
+
+        if [[ -z "$tag" ]]; then
+          echo "${pin} names no sdk: tag" >&2
+          echo "  -> run 'flitz sdk use <tag>' in the project to pin one" >&2
+          exit 1
+        fi
+
+        if [[ ! "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+[-+]flz\.[1-9][0-9]*$ ]]; then
+          echo "${pin} pins '${tag}', which is not a Flitz release tag" >&2
+          echo "  -> expected MAJOR.MINOR.PATCH+flz.N, or the -flz.N spelling; run 'flitz sdk use <tag>' to repin" >&2
+          exit 1
+        fi
+
+        {
+          echo "version=${tag}"
+          echo "dir=$(dirname "$pin")"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Check credential
+      shell: bash
+      env:
+        API_KEY: ${{ inputs.api-key }}
+      run: |
+        set -euo pipefail
+
+        if [[ -z "$API_KEY" ]]; then
+          echo "no Flitz credential was given" >&2
+          echo "  -> pass the organization API key as the api-key input, from a repository secret" >&2
+          exit 1
+        fi
+
+        echo "::add-mask::${API_KEY}"
+
+    - name: Resolve release
+      id: resolve-cli
+      shell: bash
+      env:
+        CLI_VERSION: ${{ inputs.cli-version }}
+        BASE_URL: ${{ inputs.base-url }}
+        HOST: ${{ steps.host.outputs.host }}
+      run: |
+        set -euo pipefail
+
+        base_url="${BASE_URL%/}"
+
+        if [[ "$CLI_VERSION" == *-flz.* || "$CLI_VERSION" == *+flz.* ]]; then
+          echo "cli-version '${CLI_VERSION}' is a Flitz release tag, not a CLI version" >&2
+          echo "  -> the SDK tag comes from the pin file flitz-path names; cli-version takes the CLI's own version" >&2
+          exit 1
+        fi
+
+        if [[ "$CLI_VERSION" == "latest" ]]; then
+          manifest_url="${base_url}/cli.json"
+        elif [[ "$CLI_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+          manifest_url="${base_url}/cli/${CLI_VERSION}/cli-release.json"
+        else
+          echo "cli-version '${CLI_VERSION}' is not a version" >&2
+          echo "  -> expected MAJOR.MINOR.PATCH with an optional pre-release suffix, or 'latest'" >&2
+          exit 1
+        fi
+
+        if ! manifest="$(curl --fail --silent --show-error --location --retry 3 --retry-all-errors "$manifest_url")"; then
+          if [[ "$CLI_VERSION" == "latest" ]]; then
+            echo "could not read the CLI release index at ${manifest_url}" >&2
+          else
+            echo "CLI version '${CLI_VERSION}' is not published at ${base_url}" >&2
+            echo "  -> see ${base_url}/ for the published versions" >&2
+          fi
+          exit 1
+        fi
+
+        if ! version="$(jq -er '.version' <<<"$manifest")"; then
+          echo "the manifest at ${manifest_url} names no version" >&2
+          exit 1
+        fi
+
+        if ! entry="$(jq -e --arg host "$HOST" '.binaries[$host]' <<<"$manifest")"; then
+          echo "CLI ${version} publishes no binary for ${HOST}" >&2
+          exit 1
+        fi
+
+        url="$(jq -er '.url' <<<"$entry")"
+        sha256="$(jq -er '.sha256' <<<"$entry")"
+
+        {
+          echo "version=${version}"
+          echo "url=${url}"
+          echo "sha256=${sha256}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Install the CLI
+      id: install-cli
+      shell: bash
+      env:
+        HOST: ${{ steps.host.outputs.host }}
+        URL: ${{ steps.resolve-cli.outputs.url }}
+        EXPECTED_SHA256: ${{ steps.resolve-cli.outputs.sha256 }}
+      run: |
+        set -euo pipefail
+
+        download="${RUNNER_TEMP}/flitz-cli"
+        curl --fail --silent --show-error --location --retry 3 --retry-all-errors "$URL" -o "$download"
+
+        case "$HOST" in
+          linux-x64) actual="$(sha256sum "$download" | cut -d ' ' -f 1)" ;;
+          macos-arm64) actual="$(shasum -a 256 "$download" | cut -d ' ' -f 1)" ;;
+        esac
+
+        if [[ "$actual" != "$EXPECTED_SHA256" ]]; then
+          echo "checksum mismatch on the downloaded flitz CLI" >&2
+          echo "  expected ${EXPECTED_SHA256}" >&2
+          echo "  actual   ${actual}" >&2
+          rm -f "$download"
+          exit 1
+        fi
+
+        install_dir="${HOME}/.local/bin"
+        mkdir -p "$install_dir"
+        mv -f "$download" "${install_dir}/flitz"
+        chmod +x "${install_dir}/flitz"
+
+        echo "$install_dir" >> "$GITHUB_PATH"
+        echo "path=${install_dir}/flitz" >> "$GITHUB_OUTPUT"
+
+    - name: Verify installed version
+      shell: bash
+      env:
+        FLITZ: ${{ steps.install-cli.outputs.path }}
+        EXPECTED: ${{ steps.resolve-cli.outputs.version }}
+      run: |
+        set -euo pipefail
+
+        reported="$("$FLITZ" --version)"
+        if [[ "$reported" != "$EXPECTED" ]]; then
+          echo "the installed flitz reports version '${reported}', expected '${EXPECTED}'" >&2
+          exit 1
+        fi
+
+    - name: Derive the SDK path
+      id: sdkpath
+      shell: bash
+      env:
+        TAG: ${{ steps.resolve-sdk.outputs.version }}
+      run: |
+        set -euo pipefail
+
+        cache_root="${XDG_CACHE_HOME:-${HOME}/.cache}"
+        echo "path=${cache_root}/flitz/sdk/${TAG}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the SDK cache
+      id: cache
+      if: inputs.cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.sdkpath.outputs.path }}
+        key: flitz-sdk-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve-sdk.outputs.version }}
+
+    - name: Install the SDK
+      shell: bash
+      env:
+        FLITZ: ${{ steps.install-cli.outputs.path }}
+        TAG: ${{ steps.resolve-sdk.outputs.version }}
+        FLITZ_APIKEY: ${{ inputs.api-key }}
+      run: |
+        set -euo pipefail
+
+        "$FLITZ" sdk install "$TAG"
+
+    - name: Expose the toolchain
+      shell: bash
+      env:
+        SDK_PATH: ${{ steps.sdkpath.outputs.path }}
+      run: |
+        set -euo pipefail
+
+        echo "${SDK_PATH}/bin" >> "$GITHUB_PATH"
+        echo "FLUTTER_ROOT=${SDK_PATH}" >> "$GITHUB_ENV"
+
+    - name: Scope the pub cache
+      id: pubscope
+      if: inputs.pub-cache == 'true'
+      shell: bash
+      env:
+        HOST: ${{ steps.host.outputs.host }}
+        PROJECT_DIR: ${{ steps.resolve-sdk.outputs.dir }}
+      run: |
+        set -euo pipefail
+
+        path="${PUB_CACHE:-${HOME}/.pub-cache}"
+        project="$(cd "$PROJECT_DIR" && pwd -P)"
+        workspace="$(cd "$GITHUB_WORKSPACE" && pwd -P)"
+
+        if [[ "$project" != "$workspace" && "$project" != "$workspace"/* ]]; then
+          echo "::notice::the project directory ${project} is outside the workspace; the pub cache is skipped"
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        sum256() {
+          case "$HOST" in
+            linux-x64) sha256sum | cut -d ' ' -f 1 ;;
+            macos-arm64) shasum -a 256 | cut -d ' ' -f 1 ;;
+          esac
+        }
+
+        # Each file's relative path is hashed with its contents, so moving a package changes the key.
+        digest="$(
+          cd "$project"
+          find . -type f \( -name pubspec.yaml -o -name pubspec.lock \) -print0 \
+            | LC_ALL=C sort -z \
+            | while IFS= read -r -d '' file; do
+                printf '%s %s\n' "$(sum256 < "$file")" "$file"
+              done \
+            | sum256
+        )"
+
+        {
+          echo "skip=false"
+          echo "path=${path}"
+          echo "key=pub-${RUNNER_OS}-${RUNNER_ARCH}-${digest}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Cache pub dependencies
+      if: inputs.pub-cache == 'true' && steps.pubscope.outputs.skip != 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.pubscope.outputs.path }}
+        key: ${{ steps.pubscope.outputs.key }}
+        restore-keys: |
+          pub-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Publish
+      id: publish
+      shell: bash
+      working-directory: ${{ steps.resolve-sdk.outputs.dir }}
+      env:
+        FLITZ: ${{ steps.install-cli.outputs.path }}
+        FLITZ_APIKEY: ${{ inputs.api-key }}
+        APP: ${{ inputs.app }}
+        TARGET: ${{ inputs.target }}
+        TARGET_PLATFORM: ${{ inputs.target-platform }}
+        DART_DEFINES: ${{ inputs.dart-define }}
+        DART_DEFINE_FILES: ${{ inputs.dart-define-from-file }}
+        SCHEMA: ${{ inputs.schema }}
+        NAME: ${{ inputs.name }}
+        VERSION_NAME: ${{ inputs.version-name }}
+        COMMENT: ${{ inputs.comment }}
+      run: |
+        set -euo pipefail
+
+        args=(publish --yes --json)
+
+        if [[ -n "$APP" ]]; then
+          if [[ "$APP" = /* ]]; then
+            app="$APP"
+          else
+            app="${GITHUB_WORKSPACE}/${APP}"
+          fi
+          args+=(--app "$app")
+        fi
+
+        if [[ -n "$TARGET" ]]; then
+          args+=(--target "$TARGET")
+        fi
+
+        if [[ -n "$TARGET_PLATFORM" ]]; then
+          args+=(--target-platform "$TARGET_PLATFORM")
+        fi
+
+        while IFS= read -r define || [[ -n "$define" ]]; do
+          define="${define%$'\r'}"
+          if [[ -n "$define" ]]; then
+            args+=(--dart-define "$define")
+          fi
+        done <<< "$DART_DEFINES"
+
+        # The step runs from the project directory, so a relative path would otherwise resolve there.
+        while IFS= read -r file || [[ -n "$file" ]]; do
+          file="${file%$'\r'}"
+          if [[ -z "$file" ]]; then
+            continue
+          fi
+          if [[ "$file" != /* ]]; then
+            file="${GITHUB_WORKSPACE}/${file}"
+          fi
+          args+=(--dart-define-from-file "$file")
+        done <<< "$DART_DEFINE_FILES"
+
+        if [[ -n "$SCHEMA" ]]; then
+          args+=(--schema "$SCHEMA")
+        fi
+
+        if [[ -n "$NAME" ]]; then
+          args+=(--name "$NAME")
+        fi
+
+        if [[ -n "$VERSION_NAME" ]]; then
+          args+=(--version-name "$VERSION_NAME")
+        fi
+
+        if [[ -n "$COMMENT" ]]; then
+          args+=(--comment "$COMMENT")
+        fi
+
+        "$FLITZ" "${args[@]}" > "${RUNNER_TEMP}/flitz-publish.json"
+
+    - name: Expose the result
+      id: result
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+      run: |
+        set -euo pipefail
+
+        result="${RUNNER_TEMP}/flitz-publish.json"
+
+        for field in id page_url deeplink bundle_url; do
+          if ! jq -e --arg f "$field" 'has($f) and (.[$f] | type == "string")' "$result" > /dev/null; then
+            echo "the publish result names no ${field}" >&2
+            exit 1
+          fi
+        done
+
+        id="$(jq -r '.id' "$result")"
+        page_url="$(jq -r '.page_url' "$result")"
+        deeplink="$(jq -r '.deeplink' "$result")"
+        bundle_url="$(jq -r '.bundle_url' "$result")"
+
+        {
+          echo "id<<FLITZ_OUTPUT_EOF"
+          echo "$id"
+          echo "FLITZ_OUTPUT_EOF"
+          echo "page-url<<FLITZ_OUTPUT_EOF"
+          echo "$page_url"
+          echo "FLITZ_OUTPUT_EOF"
+          echo "deeplink<<FLITZ_OUTPUT_EOF"
+          echo "$deeplink"
+          echo "FLITZ_OUTPUT_EOF"
+          echo "bundle-url<<FLITZ_OUTPUT_EOF"
+          echo "$bundle_url"
+          echo "FLITZ_OUTPUT_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        {
+          echo "### Flitz publish"
+          echo
+          echo "| | |"
+          echo "|---|---|"
+          echo "| Landing page | ${page_url} |"
+          echo "| Bundle | ${bundle_url} |"
+          echo "| Deeplink | \`${deeplink}\` |"
+          echo "| Publish id | \`${id}\` |"
+          if [[ -n "$TARGET" ]]; then
+            echo "| Entrypoint | \`${TARGET}\` |"
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Find the pull request
+      id: pr
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        number="$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH")"
+
+        if [[ -z "$number" ]]; then
+          echo "::notice::the ${GITHUB_EVENT_NAME} event is not a pull request; no Flitz preview comment was posted"
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        {
+          echo "skip=false"
+          echo "number=${number}"
+          echo "head-sha=$(jq -r '.pull_request.head.sha // empty' "$GITHUB_EVENT_PATH")"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Validate
+      if: steps.pr.outputs.skip != 'true'
+      shell: bash
+      env:
+        PAGE_URL: ${{ steps.result.outputs.page-url }}
+        KEY: ${{ inputs.pr-comment-key }}
+      run: |
+        set -euo pipefail
+
+        if [[ -z "$PAGE_URL" ]]; then
+          echo "no landing page URL was given" >&2
+          echo "  -> pass the page-url output of the publish action as page-url" >&2
+          exit 1
+        fi
+
+        if [[ ! "$KEY" =~ ^[A-Za-z0-9._-]+$ ]]; then
+          echo "'${KEY}' is not a valid comment key" >&2
+          echo "  -> use letters, digits, '.', '_', or '-'" >&2
+          exit 1
+        fi
+
+        if ! command -v gh > /dev/null 2>&1; then
+          echo "the gh CLI is not on PATH" >&2
+          echo "  -> use a GitHub-hosted runner, or install gh before this step" >&2
+          exit 1
+        fi
+
+    - name: Render the comment
+      id: render
+      if: steps.pr.outputs.skip != 'true'
+      shell: bash
+      env:
+        KEY: ${{ inputs.pr-comment-key }}
+        HEADER: ${{ inputs.pr-comment-header }}
+        PAGE_URL: ${{ steps.result.outputs.page-url }}
+        MESSAGE: ${{ inputs.pr-comment-message }}
+        DEEPLINK: ${{ steps.result.outputs.deeplink }}
+        BUNDLE_URL: ${{ steps.result.outputs.bundle-url }}
+        ID: ${{ steps.result.outputs.id }}
+        HEAD_SHA: ${{ steps.pr.outputs.head-sha }}
+      run: |
+        set -euo pipefail
+
+        # jq substitutes literally: sed and bash's ${var//} both give characters like & and \ a
+        # meaning in the replacement, and URLs carry them.
+        body="${RUNNER_TEMP}/flitz-pr-comment.md"
+        jq -Rrs \
+          --arg MARKER "<!-- flitz-preview:${KEY} -->" \
+          --arg HEADER "$HEADER" \
+          --arg PAGE_URL "$PAGE_URL" \
+          --arg MESSAGE "$MESSAGE" \
+          --arg DEEPLINK "$DEEPLINK" \
+          --arg BUNDLE_URL "$BUNDLE_URL" \
+          --arg ID "$ID" \
+          --arg HEAD_SHA "$HEAD_SHA" \
+          '
+            $ARGS.named as $values
+            | [$values | to_entries[] | select(.value == "") | "{{" + .key + "}}"] as $empty
+            | split("\n")
+            | map(select(. as $line | $empty | all(. as $p | $line | contains($p) | not)))
+            | map(reduce ($values | to_entries[]) as $e (.; split("{{" + $e.key + "}}") | join($e.value)))
+            | join("\n")
+          ' "${GITHUB_ACTION_PATH}/pr-comment/comment.md" > "$body"
+
+        echo "path=${body}" >> "$GITHUB_OUTPUT"
+
+    - name: Post the comment
+      id: post
+      if: steps.pr.outputs.skip != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        NUMBER: ${{ steps.pr.outputs.number }}
+        BODY: ${{ steps.render.outputs.path }}
+      run: |
+        set -euo pipefail
+
+        response="${RUNNER_TEMP}/flitz-pr-comment-response.json"
+        errors="${RUNNER_TEMP}/flitz-pr-comment-errors.txt"
+
+        if ! jq -n --rawfile body "$BODY" '{body: $body}' \
+          | gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${NUMBER}/comments" --input - \
+            > "$response" 2> "$errors"; then
+          if grep -q "HTTP 403" "$errors"; then
+            echo "the token cannot comment on pull request #${NUMBER}" >&2
+            echo "  -> grant the job 'permissions: pull-requests: write'; runs from forks get a read-only token" >&2
+          else
+            cat "$errors" >&2
+          fi
+          exit 1
+        fi
+
+        {
+          echo "comment-url=$(jq -r '.html_url' "$response")"
+          echo "id=$(jq -r '.id' "$response")"
+          echo "author=$(jq -r '.user.login' "$response")"
+        } >> "$GITHUB_OUTPUT"
+
+    # The new comment is already up, so nothing here fails the action: a leftover comment is only
+    # clutter.
+    - name: Remove older comments
+      if: steps.pr.outputs.skip != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        NUMBER: ${{ steps.pr.outputs.number }}
+        KEY: ${{ inputs.pr-comment-key }}
+        NEW_ID: ${{ steps.post.outputs.id }}
+        AUTHOR: ${{ steps.post.outputs.author }}
+      run: |
+        set -uo pipefail
+
+        marker="<!-- flitz-preview:${KEY} -->"
+
+        if ! stale="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${NUMBER}/comments" \
+          | jq -r --arg author "$AUTHOR" --arg marker "$marker" --arg new "$NEW_ID" \
+            '.[] | select(.user.login == $author and (.body | contains($marker)) and (.id | tostring) != $new) | "\(.id) \(.html_url)"')"; then
+          echo "::warning::could not list the comments on pull request #${NUMBER}; older Flitz preview comments stay"
+          exit 0
+        fi
+
+        while read -r id url; do
+          if [[ -z "$id" ]]; then
+            continue
+          fi
+          if ! gh api --method DELETE "repos/${GITHUB_REPOSITORY}/issues/comments/${id}" > /dev/null; then
+            echo "::warning::could not delete the previous Flitz preview comment ${url}"
+          fi
+        done <<< "$stale"

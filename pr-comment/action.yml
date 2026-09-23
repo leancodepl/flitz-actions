@@ -1,0 +1,193 @@
+name: Comment a Flitz preview
+description: Post the publish's landing page, deeplink, and bundle as a comment on the triggering pull request.
+
+inputs:
+  page-url:
+    description: The landing page URL — the page-url output of the publish action.
+    required: true
+  deeplink:
+    description: The deeplink — the deeplink output of the publish action.
+    required: false
+    default: ""
+  bundle-url:
+    description: The bundle URL — the bundle-url output of the publish action.
+    required: false
+    default: ""
+  id:
+    description: The publish id — the id output of the publish action.
+    required: false
+    default: ""
+  key:
+    description: Identifies the comment among the Flitz comments on one pull request. Letters, digits, '.', '_', or '-'.
+    required: false
+    default: default
+  header:
+    description: The comment's heading text.
+    required: false
+    default: Flitz preview build
+  message:
+    description: Markdown inserted below the landing-page link, e.g. which loader build opens the bundle.
+    required: false
+    default: ""
+  github-token:
+    description: The token the comment is posted and cleaned up with. Needs pull-requests write permission.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  comment-url:
+    description: The HTML URL of the posted comment. Empty when the event is not a pull request.
+    value: ${{ steps.post.outputs.comment-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Find the pull request
+      id: pr
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        number="$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH")"
+
+        if [[ -z "$number" ]]; then
+          echo "::notice::the ${GITHUB_EVENT_NAME} event is not a pull request; no Flitz preview comment was posted"
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        {
+          echo "skip=false"
+          echo "number=${number}"
+          echo "head-sha=$(jq -r '.pull_request.head.sha // empty' "$GITHUB_EVENT_PATH")"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Validate
+      if: steps.pr.outputs.skip != 'true'
+      shell: bash
+      env:
+        PAGE_URL: ${{ inputs.page-url }}
+        KEY: ${{ inputs.key }}
+      run: |
+        set -euo pipefail
+
+        if [[ -z "$PAGE_URL" ]]; then
+          echo "no landing page URL was given" >&2
+          echo "  -> pass the page-url output of the publish action as page-url" >&2
+          exit 1
+        fi
+
+        if [[ ! "$KEY" =~ ^[A-Za-z0-9._-]+$ ]]; then
+          echo "'${KEY}' is not a valid comment key" >&2
+          echo "  -> use letters, digits, '.', '_', or '-'" >&2
+          exit 1
+        fi
+
+        if ! command -v gh > /dev/null 2>&1; then
+          echo "the gh CLI is not on PATH" >&2
+          echo "  -> use a GitHub-hosted runner, or install gh before this step" >&2
+          exit 1
+        fi
+
+    - name: Render the comment
+      id: render
+      if: steps.pr.outputs.skip != 'true'
+      shell: bash
+      env:
+        KEY: ${{ inputs.key }}
+        HEADER: ${{ inputs.header }}
+        PAGE_URL: ${{ inputs.page-url }}
+        MESSAGE: ${{ inputs.message }}
+        DEEPLINK: ${{ inputs.deeplink }}
+        BUNDLE_URL: ${{ inputs.bundle-url }}
+        ID: ${{ inputs.id }}
+        HEAD_SHA: ${{ steps.pr.outputs.head-sha }}
+      run: |
+        set -euo pipefail
+
+        # jq substitutes literally: sed and bash's ${var//} both give characters like & and \ a
+        # meaning in the replacement, and URLs carry them.
+        body="${RUNNER_TEMP}/flitz-pr-comment.md"
+        jq -Rrs \
+          --arg MARKER "<!-- flitz-preview:${KEY} -->" \
+          --arg HEADER "$HEADER" \
+          --arg PAGE_URL "$PAGE_URL" \
+          --arg MESSAGE "$MESSAGE" \
+          --arg DEEPLINK "$DEEPLINK" \
+          --arg BUNDLE_URL "$BUNDLE_URL" \
+          --arg ID "$ID" \
+          --arg HEAD_SHA "$HEAD_SHA" \
+          '
+            $ARGS.named as $values
+            | [$values | to_entries[] | select(.value == "") | "{{" + .key + "}}"] as $empty
+            | split("\n")
+            | map(select(. as $line | $empty | all(. as $p | $line | contains($p) | not)))
+            | map(reduce ($values | to_entries[]) as $e (.; split("{{" + $e.key + "}}") | join($e.value)))
+            | join("\n")
+          ' "${GITHUB_ACTION_PATH}/comment.md" > "$body"
+
+        echo "path=${body}" >> "$GITHUB_OUTPUT"
+
+    - name: Post the comment
+      id: post
+      if: steps.pr.outputs.skip != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        NUMBER: ${{ steps.pr.outputs.number }}
+        BODY: ${{ steps.render.outputs.path }}
+      run: |
+        set -euo pipefail
+
+        response="${RUNNER_TEMP}/flitz-pr-comment-response.json"
+        errors="${RUNNER_TEMP}/flitz-pr-comment-errors.txt"
+
+        if ! jq -n --rawfile body "$BODY" '{body: $body}' \
+          | gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${NUMBER}/comments" --input - \
+            > "$response" 2> "$errors"; then
+          if grep -q "HTTP 403" "$errors"; then
+            echo "the token cannot comment on pull request #${NUMBER}" >&2
+            echo "  -> grant the job 'permissions: pull-requests: write'; runs from forks get a read-only token" >&2
+          else
+            cat "$errors" >&2
+          fi
+          exit 1
+        fi
+
+        {
+          echo "comment-url=$(jq -r '.html_url' "$response")"
+          echo "id=$(jq -r '.id' "$response")"
+          echo "author=$(jq -r '.user.login' "$response")"
+        } >> "$GITHUB_OUTPUT"
+
+    # The new comment is already up, so nothing here fails the action: a leftover comment is only
+    # clutter.
+    - name: Remove older comments
+      if: steps.pr.outputs.skip != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        NUMBER: ${{ steps.pr.outputs.number }}
+        KEY: ${{ inputs.key }}
+        NEW_ID: ${{ steps.post.outputs.id }}
+        AUTHOR: ${{ steps.post.outputs.author }}
+      run: |
+        set -uo pipefail
+
+        marker="<!-- flitz-preview:${KEY} -->"
+
+        if ! stale="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${NUMBER}/comments" \
+          | jq -r --arg author "$AUTHOR" --arg marker "$marker" --arg new "$NEW_ID" \
+            '.[] | select(.user.login == $author and (.body | contains($marker)) and (.id | tostring) != $new) | "\(.id) \(.html_url)"')"; then
+          echo "::warning::could not list the comments on pull request #${NUMBER}; older Flitz preview comments stay"
+          exit 0
+        fi
+
+        while read -r id url; do
+          if [[ -z "$id" ]]; then
+            continue
+          fi
+          if ! gh api --method DELETE "repos/${GITHUB_REPOSITORY}/issues/comments/${id}" > /dev/null; then
+            echo "::warning::could not delete the previous Flitz preview comment ${url}"
+          fi
+        done <<< "$stale"

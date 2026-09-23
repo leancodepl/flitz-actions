@@ -1,0 +1,321 @@
+name: Install Flitz
+description: Install the flitz CLI and the project's pinned Flitz SDK, and restore the pub cache.
+
+# The step bodies below mirror install-cli/action.yml and install-sdk/action.yml rather than
+# referencing them with a relative `uses:`. A relative local action inside a composite action is
+# resolved against the caller's workspace, which does not contain this repository when the action is
+# consumed from another repo.
+
+inputs:
+  cli-version:
+    description: A CLI semantic version (0.1.0, 1.5.0-rc.1), or `latest`.
+    required: false
+    default: latest
+  base-url:
+    description: The public download host serving the CLI artifacts.
+    required: false
+    default: https://download.flitz.dev
+  flitz-path:
+    description: The project's pin file, naming the SDK tag to install and the project directory. Relative to the workspace root.
+    required: false
+    default: flitz.yaml
+  api-key:
+    description: The organization API key, from a repository secret. Passed only to the step that runs flitz sdk install.
+    required: true
+  cache:
+    description: Whether to restore and save the SDK cache.
+    required: false
+    default: "true"
+  pub-cache:
+    description: Whether to restore and save the pub dependency cache.
+    required: false
+    default: "true"
+
+outputs:
+  cli-version:
+    description: The concrete CLI version installed, with `latest` already resolved.
+    value: ${{ steps.resolve-cli.outputs.version }}
+  flitz-version:
+    description: The resolved Flitz release tag.
+    value: ${{ steps.resolve-sdk.outputs.version }}
+  sdk-path:
+    description: The absolute path of the installed SDK root — a valid FLUTTER_ROOT.
+    value: ${{ steps.sdkpath.outputs.path }}
+  sdk-cache-hit:
+    description: Whether the SDK cache was restored.
+    value: ${{ steps.cache.outputs.cache-hit == 'true' }}
+
+runs:
+  using: composite
+  steps:
+    - name: Detect host
+      id: host
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        case "${RUNNER_OS}/${RUNNER_ARCH}" in
+          Linux/X64) host=linux-x64 ;;
+          macOS/ARM64) host=macos-arm64 ;;
+          *)
+            echo "unsupported runner ${RUNNER_OS}/${RUNNER_ARCH}" >&2
+            echo "  -> supported runners: Linux/X64 (linux-x64), macOS/ARM64 (macos-arm64)" >&2
+            exit 1
+            ;;
+        esac
+
+        echo "host=${host}" >> "$GITHUB_OUTPUT"
+
+    - name: Resolve the pin
+      id: resolve-sdk
+      shell: bash
+      env:
+        FLITZ_PATH: ${{ inputs.flitz-path }}
+      run: |
+        set -euo pipefail
+
+        if [[ "$FLITZ_PATH" = /* ]]; then
+          pin="$FLITZ_PATH"
+        else
+          pin="${GITHUB_WORKSPACE}/${FLITZ_PATH}"
+        fi
+
+        if [[ ! -f "$pin" ]]; then
+          echo "${pin} is not a flitz.yaml" >&2
+          echo "  -> run 'flitz sdk use <tag>' in the project, or point flitz-path at its flitz.yaml" >&2
+          exit 1
+        fi
+
+        tag="$(sed -n 's/^sdk:[[:space:]]*//p' "$pin" | head -n 1)"
+        tag="${tag%%#*}"
+        tag="$(printf '%s' "$tag" | tr -d '\r' | sed -e 's/[[:space:]]*$//' -e 's/^["'"'"']//' -e 's/["'"'"']$//')"
+
+        if [[ -z "$tag" ]]; then
+          echo "${pin} names no sdk: tag" >&2
+          echo "  -> run 'flitz sdk use <tag>' in the project to pin one" >&2
+          exit 1
+        fi
+
+        if [[ ! "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+[-+]flz\.[1-9][0-9]*$ ]]; then
+          echo "${pin} pins '${tag}', which is not a Flitz release tag" >&2
+          echo "  -> expected MAJOR.MINOR.PATCH+flz.N, or the -flz.N spelling; run 'flitz sdk use <tag>' to repin" >&2
+          exit 1
+        fi
+
+        {
+          echo "version=${tag}"
+          echo "dir=$(dirname "$pin")"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Check credential
+      shell: bash
+      env:
+        API_KEY: ${{ inputs.api-key }}
+      run: |
+        set -euo pipefail
+
+        if [[ -z "$API_KEY" ]]; then
+          echo "no Flitz credential was given" >&2
+          echo "  -> pass the organization API key as the api-key input, from a repository secret" >&2
+          exit 1
+        fi
+
+        echo "::add-mask::${API_KEY}"
+
+    - name: Resolve release
+      id: resolve-cli
+      shell: bash
+      env:
+        CLI_VERSION: ${{ inputs.cli-version }}
+        BASE_URL: ${{ inputs.base-url }}
+        HOST: ${{ steps.host.outputs.host }}
+      run: |
+        set -euo pipefail
+
+        base_url="${BASE_URL%/}"
+
+        if [[ "$CLI_VERSION" == *-flz.* || "$CLI_VERSION" == *+flz.* ]]; then
+          echo "cli-version '${CLI_VERSION}' is a Flitz release tag, not a CLI version" >&2
+          echo "  -> the SDK tag comes from the pin file flitz-path names; cli-version takes the CLI's own version" >&2
+          exit 1
+        fi
+
+        if [[ "$CLI_VERSION" == "latest" ]]; then
+          manifest_url="${base_url}/cli.json"
+        elif [[ "$CLI_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+          manifest_url="${base_url}/cli/${CLI_VERSION}/cli-release.json"
+        else
+          echo "cli-version '${CLI_VERSION}' is not a version" >&2
+          echo "  -> expected MAJOR.MINOR.PATCH with an optional pre-release suffix, or 'latest'" >&2
+          exit 1
+        fi
+
+        if ! manifest="$(curl --fail --silent --show-error --location --retry 3 --retry-all-errors "$manifest_url")"; then
+          if [[ "$CLI_VERSION" == "latest" ]]; then
+            echo "could not read the CLI release index at ${manifest_url}" >&2
+          else
+            echo "CLI version '${CLI_VERSION}' is not published at ${base_url}" >&2
+            echo "  -> see ${base_url}/ for the published versions" >&2
+          fi
+          exit 1
+        fi
+
+        if ! version="$(jq -er '.version' <<<"$manifest")"; then
+          echo "the manifest at ${manifest_url} names no version" >&2
+          exit 1
+        fi
+
+        if ! entry="$(jq -e --arg host "$HOST" '.binaries[$host]' <<<"$manifest")"; then
+          echo "CLI ${version} publishes no binary for ${HOST}" >&2
+          exit 1
+        fi
+
+        url="$(jq -er '.url' <<<"$entry")"
+        sha256="$(jq -er '.sha256' <<<"$entry")"
+
+        {
+          echo "version=${version}"
+          echo "url=${url}"
+          echo "sha256=${sha256}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Install the CLI
+      id: install-cli
+      shell: bash
+      env:
+        HOST: ${{ steps.host.outputs.host }}
+        URL: ${{ steps.resolve-cli.outputs.url }}
+        EXPECTED_SHA256: ${{ steps.resolve-cli.outputs.sha256 }}
+      run: |
+        set -euo pipefail
+
+        download="${RUNNER_TEMP}/flitz-cli"
+        curl --fail --silent --show-error --location --retry 3 --retry-all-errors "$URL" -o "$download"
+
+        case "$HOST" in
+          linux-x64) actual="$(sha256sum "$download" | cut -d ' ' -f 1)" ;;
+          macos-arm64) actual="$(shasum -a 256 "$download" | cut -d ' ' -f 1)" ;;
+        esac
+
+        if [[ "$actual" != "$EXPECTED_SHA256" ]]; then
+          echo "checksum mismatch on the downloaded flitz CLI" >&2
+          echo "  expected ${EXPECTED_SHA256}" >&2
+          echo "  actual   ${actual}" >&2
+          rm -f "$download"
+          exit 1
+        fi
+
+        install_dir="${HOME}/.local/bin"
+        mkdir -p "$install_dir"
+        mv -f "$download" "${install_dir}/flitz"
+        chmod +x "${install_dir}/flitz"
+
+        echo "$install_dir" >> "$GITHUB_PATH"
+        echo "path=${install_dir}/flitz" >> "$GITHUB_OUTPUT"
+
+    - name: Verify installed version
+      shell: bash
+      env:
+        FLITZ: ${{ steps.install-cli.outputs.path }}
+        EXPECTED: ${{ steps.resolve-cli.outputs.version }}
+      run: |
+        set -euo pipefail
+
+        reported="$("$FLITZ" --version)"
+        if [[ "$reported" != "$EXPECTED" ]]; then
+          echo "the installed flitz reports version '${reported}', expected '${EXPECTED}'" >&2
+          exit 1
+        fi
+
+    - name: Derive the SDK path
+      id: sdkpath
+      shell: bash
+      env:
+        TAG: ${{ steps.resolve-sdk.outputs.version }}
+      run: |
+        set -euo pipefail
+
+        cache_root="${XDG_CACHE_HOME:-${HOME}/.cache}"
+        echo "path=${cache_root}/flitz/sdk/${TAG}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the SDK cache
+      id: cache
+      if: inputs.cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.sdkpath.outputs.path }}
+        key: flitz-sdk-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve-sdk.outputs.version }}
+
+    - name: Install the SDK
+      shell: bash
+      env:
+        FLITZ: ${{ steps.install-cli.outputs.path }}
+        TAG: ${{ steps.resolve-sdk.outputs.version }}
+        FLITZ_APIKEY: ${{ inputs.api-key }}
+      run: |
+        set -euo pipefail
+
+        "$FLITZ" sdk install "$TAG"
+
+    - name: Expose the toolchain
+      shell: bash
+      env:
+        SDK_PATH: ${{ steps.sdkpath.outputs.path }}
+      run: |
+        set -euo pipefail
+
+        echo "${SDK_PATH}/bin" >> "$GITHUB_PATH"
+        echo "FLUTTER_ROOT=${SDK_PATH}" >> "$GITHUB_ENV"
+
+    - name: Scope the pub cache
+      id: pubscope
+      if: inputs.pub-cache == 'true'
+      shell: bash
+      env:
+        HOST: ${{ steps.host.outputs.host }}
+        PROJECT_DIR: ${{ steps.resolve-sdk.outputs.dir }}
+      run: |
+        set -euo pipefail
+
+        path="${PUB_CACHE:-${HOME}/.pub-cache}"
+        project="$(cd "$PROJECT_DIR" && pwd -P)"
+        workspace="$(cd "$GITHUB_WORKSPACE" && pwd -P)"
+
+        if [[ "$project" != "$workspace" && "$project" != "$workspace"/* ]]; then
+          echo "::notice::the project directory ${project} is outside the workspace; the pub cache is skipped"
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        sum256() {
+          case "$HOST" in
+            linux-x64) sha256sum | cut -d ' ' -f 1 ;;
+            macos-arm64) shasum -a 256 | cut -d ' ' -f 1 ;;
+          esac
+        }
+
+        # Each file's relative path is hashed with its contents, so moving a package changes the key.
+        digest="$(
+          cd "$project"
+          find . -type f \( -name pubspec.yaml -o -name pubspec.lock \) -print0 \
+            | LC_ALL=C sort -z \
+            | while IFS= read -r -d '' file; do
+                printf '%s %s\n' "$(sum256 < "$file")" "$file"
+              done \
+            | sum256
+        )"
+
+        {
+          echo "skip=false"
+          echo "path=${path}"
+          echo "key=pub-${RUNNER_OS}-${RUNNER_ARCH}-${digest}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Cache pub dependencies
+      if: inputs.pub-cache == 'true' && steps.pubscope.outputs.skip != 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.pubscope.outputs.path }}
+        key: ${{ steps.pubscope.outputs.key }}
+        restore-keys: |
+          pub-${{ runner.os }}-${{ runner.arch }}-

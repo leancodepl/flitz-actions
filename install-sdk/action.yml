@@ -1,0 +1,165 @@
+name: Install Flitz SDK
+description: Install one Flitz release into the CLI cache and put its toolchain on PATH.
+
+inputs:
+  flitz-version:
+    description: The Flitz release tag to install, e.g. 3.41.4-flz.1. Empty reads the tag from the pin file flitz-path names.
+    required: false
+    default: ""
+  flitz-path:
+    description: The project's pin file. Relative to the workspace root; read only when flitz-version is empty.
+    required: false
+    default: flitz.yaml
+  api-key:
+    description: The organization API key, from a repository secret. Passed only to the step that runs flitz sdk install.
+    required: true
+  cache:
+    description: Whether to restore and save the SDK cache.
+    required: false
+    default: "true"
+
+outputs:
+  version:
+    description: The resolved release tag.
+    value: ${{ steps.resolve.outputs.version }}
+  path:
+    description: The absolute path of the installed SDK root — a valid FLUTTER_ROOT.
+    value: ${{ steps.sdkpath.outputs.path }}
+  cache-hit:
+    description: Whether the SDK cache was restored.
+    value: ${{ steps.cache.outputs.cache-hit == 'true' }}
+
+runs:
+  using: composite
+  steps:
+    - name: Detect host
+      id: host
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        case "${RUNNER_OS}/${RUNNER_ARCH}" in
+          Linux/X64) host=linux-x64 ;;
+          macOS/ARM64) host=macos-arm64 ;;
+          *)
+            echo "unsupported runner ${RUNNER_OS}/${RUNNER_ARCH}" >&2
+            echo "  -> supported runners: Linux/X64 (linux-x64), macOS/ARM64 (macos-arm64)" >&2
+            exit 1
+            ;;
+        esac
+
+        echo "host=${host}" >> "$GITHUB_OUTPUT"
+
+    - name: Require the flitz CLI
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if ! command -v flitz > /dev/null 2>&1; then
+          echo "the flitz CLI is not on PATH" >&2
+          echo "  -> run the install-cli action first" >&2
+          exit 1
+        fi
+
+    - name: Resolve release tag
+      id: resolve
+      shell: bash
+      env:
+        FLITZ_VERSION: ${{ inputs.flitz-version }}
+        FLITZ_PATH: ${{ inputs.flitz-path }}
+      run: |
+        set -euo pipefail
+
+        if [[ -n "$FLITZ_VERSION" ]]; then
+          tag="$FLITZ_VERSION"
+        else
+          if [[ "$FLITZ_PATH" = /* ]]; then
+            pin="$FLITZ_PATH"
+          else
+            pin="${GITHUB_WORKSPACE}/${FLITZ_PATH}"
+          fi
+
+          if [[ ! -f "$pin" ]]; then
+            echo "no flitz-version given and no pin at ${pin}" >&2
+            echo "  -> pass the tag as flitz-version, or commit a flitz.yaml naming it" >&2
+            exit 1
+          fi
+
+          tag="$(sed -n 's/^sdk:[[:space:]]*//p' "$pin" | head -n 1)"
+          tag="${tag%%#*}"
+          tag="$(printf '%s' "$tag" | tr -d '\r' | sed -e 's/[[:space:]]*$//' -e 's/^["'"'"']//' -e 's/["'"'"']$//')"
+
+          if [[ -z "$tag" ]]; then
+            echo "${pin} names no sdk: tag" >&2
+            echo "  -> pass the tag as flitz-version, or add an sdk: key to flitz.yaml" >&2
+            exit 1
+          fi
+        fi
+
+        if [[ "$tag" == "latest" ]]; then
+          echo "'latest' is not a concrete Flitz release tag" >&2
+          echo "  -> run 'flitz sdk releases' to find the tag to pass" >&2
+          exit 1
+        fi
+
+        if [[ ! "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+[-+]flz\.[1-9][0-9]*$ ]]; then
+          echo "'${tag}' is not a Flitz release tag" >&2
+          echo "  -> expected MAJOR.MINOR.PATCH+flz.N, or the -flz.N spelling" >&2
+          exit 1
+        fi
+
+        echo "version=${tag}" >> "$GITHUB_OUTPUT"
+
+    - name: Check credential
+      shell: bash
+      env:
+        API_KEY: ${{ inputs.api-key }}
+      run: |
+        set -euo pipefail
+
+        if [[ -z "$API_KEY" ]]; then
+          echo "no Flitz credential was given" >&2
+          echo "  -> pass the organization API key as the api-key input, from a repository secret" >&2
+          exit 1
+        fi
+
+        echo "::add-mask::${API_KEY}"
+
+    - name: Derive the SDK path
+      id: sdkpath
+      shell: bash
+      env:
+        TAG: ${{ steps.resolve.outputs.version }}
+      run: |
+        set -euo pipefail
+
+        cache_root="${XDG_CACHE_HOME:-${HOME}/.cache}"
+        echo "path=${cache_root}/flitz/sdk/${TAG}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the SDK cache
+      id: cache
+      if: inputs.cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.sdkpath.outputs.path }}
+        key: flitz-sdk-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.version }}
+
+    - name: Install the SDK
+      shell: bash
+      env:
+        TAG: ${{ steps.resolve.outputs.version }}
+        FLITZ_APIKEY: ${{ inputs.api-key }}
+      run: |
+        set -euo pipefail
+
+        flitz sdk install "$TAG"
+
+    - name: Expose the toolchain
+      shell: bash
+      env:
+        SDK_PATH: ${{ steps.sdkpath.outputs.path }}
+      run: |
+        set -euo pipefail
+
+        echo "${SDK_PATH}/bin" >> "$GITHUB_PATH"
+        echo "FLUTTER_ROOT=${SDK_PATH}" >> "$GITHUB_ENV"
