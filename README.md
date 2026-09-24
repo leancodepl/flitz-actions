@@ -45,8 +45,9 @@ jobs:
           api-key: ${{ secrets.FLITZ_APIKEY }}
 ```
 
-A monorepo app whose pin is not at the repository root, built from a flavor entry point, with
-publish metadata taken from the pull request and a comment note for reviewers:
+A monorepo app whose pin is not at the repository root, built from a flavor entry point, with a
+comment note for reviewers. The publish `name`, `version-name`, and `comment` default to the pull
+request's number, title, commit, and run:
 
 ```yaml
 - uses: leancodepl/flitz-actions@main
@@ -54,9 +55,6 @@ publish metadata taken from the pull request and a comment note for reviewers:
     flitz-path: mobile/flitz.yaml
     api-key: ${{ secrets.FLITZ_APIKEY }}
     target: lib/main_tst.dart
-    name: "PR #${{ github.event.pull_request.number }}"
-    version-name: pr-${{ github.event.pull_request.number }}
-    comment: ${{ github.event.pull_request.html_url }}
     pr-comment-message: Scan the QR with the Flitz-enabled test build.
 ```
 
@@ -217,9 +215,9 @@ Builds the project's app with `flitz publish` and exposes the result. Requires `
 | `dart-define` | *(empty)* | Compile-time constants, one `KEY=VALUE` per line, each forwarded as one `--dart-define`. |
 | `dart-define-from-file` | *(empty)* | `.json` or `.env` constant files, one path per line, each forwarded as one `--dart-define-from-file`. |
 | `schema` | *(empty)* | The deeplink URL scheme, forwarded as `--schema`. Empty uses `flitz`. |
-| `name` | *(empty)* | Display title for the publish, forwarded as `--name`. Trimmed to 120 characters. |
-| `version-name` | *(empty)* | Version label for the publish, forwarded as `--version-name`. Trimmed to 64 characters. |
-| `comment` | *(empty)* | Free-text comment for the publish, forwarded as `--comment`. Trimmed to 1000 characters. |
+| `name` | *(empty)* | Display title for the publish, shown in the publish history, forwarded as `--name`. Empty uses `PR #<number>: <title>` on a pull request, else the ref name. Trimmed to 120 characters. |
+| `version-name` | *(empty)* | Version label for the publish, forwarded as `--version-name`. Empty uses `pr-<number>-<short sha>` on a pull request, else `<ref>-<short sha>`. Trimmed to 64 characters. |
+| `comment` | *(empty)* | Free-text comment for the publish, forwarded as `--comment`. Empty uses the pull-request URL (on a pull request), the ref and commit, and the run URL. Trimmed to 1000 characters. |
 
 | Output | Description |
 |---|---|

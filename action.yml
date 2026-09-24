@@ -55,15 +55,15 @@ inputs:
     required: false
     default: ""
   name:
-    description: Display title for the publish, forwarded as --name. Trimmed to 120 characters.
+    description: Display title for the publish, forwarded as --name. Empty uses "PR #<number>: <title>" on a pull request, else the ref name. Trimmed to 120 characters.
     required: false
     default: ""
   version-name:
-    description: Version label for the publish, forwarded as --version-name. Trimmed to 64 characters.
+    description: Version label for the publish, forwarded as --version-name. Empty uses pr-<number>-<short sha> on a pull request, else <ref>-<short sha>. Trimmed to 64 characters.
     required: false
     default: ""
   comment:
-    description: Free-text comment for the publish, forwarded as --comment. Trimmed to 1000 characters.
+    description: Free-text comment for the publish, forwarded as --comment. Empty uses the pull-request URL (on a pull request), the ref and commit, and the run URL. Trimmed to 1000 characters.
     required: false
     default: ""
   pr-comment-key:
@@ -403,8 +403,25 @@ runs:
         NAME: ${{ inputs.name }}
         VERSION_NAME: ${{ inputs.version-name }}
         COMMENT: ${{ inputs.comment }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PR_TITLE: ${{ github.event.pull_request.title }}
+        PR_URL: ${{ github.event.pull_request.html_url }}
+        PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: |
         set -euo pipefail
+
+        # Empty metadata describes the run: the pull request when there is one, else the ref.
+        run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+        if [[ -n "$PR_NUMBER" ]]; then
+          NAME="${NAME:-PR #${PR_NUMBER}: ${PR_TITLE}}"
+          VERSION_NAME="${VERSION_NAME:-pr-${PR_NUMBER}-${PR_HEAD_SHA:0:7}}"
+          COMMENT="${COMMENT:-${PR_URL} | ${PR_HEAD_REF} @ ${PR_HEAD_SHA} | ${run_url}}"
+        else
+          NAME="${NAME:-${GITHUB_REF_NAME}}"
+          VERSION_NAME="${VERSION_NAME:-${GITHUB_REF_NAME}-${GITHUB_SHA:0:7}}"
+          COMMENT="${COMMENT:-${GITHUB_REF_NAME} @ ${GITHUB_SHA} | ${run_url}}"
+        fi
 
         # flitz publish rejects metadata over its caps, so over-long values are cut to fit.
         trim() {
