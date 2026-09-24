@@ -217,9 +217,9 @@ Builds the project's app with `flitz publish` and exposes the result. Requires `
 | `dart-define` | *(empty)* | Compile-time constants, one `KEY=VALUE` per line, each forwarded as one `--dart-define`. |
 | `dart-define-from-file` | *(empty)* | `.json` or `.env` constant files, one path per line, each forwarded as one `--dart-define-from-file`. |
 | `schema` | *(empty)* | The deeplink URL scheme, forwarded as `--schema`. Empty uses `flitz`. |
-| `name` | *(empty)* | Display title for the publish, forwarded as `--name`. At most 120 characters. |
-| `version-name` | *(empty)* | Version label for the publish, forwarded as `--version-name`. At most 64 characters. |
-| `comment` | *(empty)* | Free-text comment for the publish, forwarded as `--comment`. At most 1000 characters. |
+| `name` | *(empty)* | Display title for the publish, forwarded as `--name`. Trimmed to 120 characters. |
+| `version-name` | *(empty)* | Version label for the publish, forwarded as `--version-name`. Trimmed to 64 characters. |
+| `comment` | *(empty)* | Free-text comment for the publish, forwarded as `--comment`. Trimmed to 1000 characters. |
 
 | Output | Description |
 |---|---|
@@ -348,9 +348,10 @@ outputs are already set, and a later step with `if: always()` can read them.
 | Credential rejected, or the organization's license inactive | `flitz sdk install`, `flitz publish` | The CLI's not-authorized error, exit 3. |
 | Release carries no SDK archive for the detected host | `flitz sdk install`, `flitz publish` | The CLI's configuration error naming the tag and the host, exit 1. |
 | SDK archive checksum mismatch | `flitz sdk install`, `flitz publish` | The CLI's service error naming both digests, exit 4; the cache is left untouched. |
-| `app` holds no Flutter application, `schema` invalid, or a metadata value exceeds its cap | `flitz publish` | The CLI's usage error naming the path, the flag, or the field, exit 1. |
+| `app` holds no Flutter application, or `schema` invalid | `flitz publish` | The CLI's usage error naming the path, the flag, or the field, exit 1. |
 | Kernel, bytecode, or packaging failure, including a `target` or a `dart-define-from-file` path that names no file | `flitz publish` | The CLI's build error naming the failing tool, exit 5. |
 | Bundle or page upload failed, or the write-once destination occupied | `flitz publish` | The CLI's service error, exit 4; a failed page upload names the landed bundle URL. No output is set. |
+| `name`, `version-name`, or `comment` over its cap | `publish` | Logs a warning naming the input and its length, trims it to the cap, and continues. |
 | Publish result missing a field | `publish` | Fails naming the field. |
 | Event is not a pull request | `pr-comment` | Logs a notice naming the event, posts nothing, and succeeds. |
 | `page-url` empty | `pr-comment` | Fails naming the input and the `publish` output that supplies it. |

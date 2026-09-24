@@ -39,32 +39,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # `flitz publish` rejects over-long metadata and the action does not trim
-      # it (--name <= 120, --version-name <= 64, --comment <= 1000 characters),
-      # and a PR title has no cap, so the values are built and trimmed here.
-      - name: Publish metadata
-        id: meta
-        env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          name="PR #${PR_NUMBER}: ${PR_TITLE}"
-          comment="${PR_URL} | ${HEAD_REF} @ ${HEAD_SHA} | ${RUN_URL}"
-          {
-            echo "name<<EOF"
-            echo "${name:0:120}"
-            echo "EOF"
-            echo "version-name=pr-${PR_NUMBER}-${HEAD_SHA:0:7}"
-            echo "comment<<EOF"
-            echo "${comment:0:1000}"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
       # Installs the CLI and the SDK pinned in example_app/flitz.yaml, caches
       # the SDK and the pub cache, runs `flitz publish` from example_app/, and
       # posts the PR comment, replacing its previous copy.
@@ -73,8 +47,9 @@ jobs:
         with:
           flitz-path: example_app/flitz.yaml
           api-key: ${{ secrets.FLITZ_APIKEY }}
-          name: ${{ steps.meta.outputs.name }}
-          version-name: ${{ steps.meta.outputs.version-name }}
-          comment: ${{ steps.meta.outputs.comment }}
+          # The action trims name, version-name, and comment to the CLI's caps.
+          name: "PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}"
+          version-name: pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          comment: ${{ github.event.pull_request.html_url }} | ${{ github.event.pull_request.head.ref }} @ ${{ github.event.pull_request.head.sha }} | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           pr-comment-header: 📱 Flitz preview build
           pr-comment-message: Open it with a Flitz-enabled loader build.

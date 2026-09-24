@@ -55,15 +55,15 @@ inputs:
     required: false
     default: ""
   name:
-    description: Display title for the publish, forwarded as --name. At most 120 characters.
+    description: Display title for the publish, forwarded as --name. Trimmed to 120 characters.
     required: false
     default: ""
   version-name:
-    description: Version label for the publish, forwarded as --version-name. At most 64 characters.
+    description: Version label for the publish, forwarded as --version-name. Trimmed to 64 characters.
     required: false
     default: ""
   comment:
-    description: Free-text comment for the publish, forwarded as --comment. At most 1000 characters.
+    description: Free-text comment for the publish, forwarded as --comment. Trimmed to 1000 characters.
     required: false
     default: ""
   pr-comment-key:
@@ -405,6 +405,18 @@ runs:
         COMMENT: ${{ inputs.comment }}
       run: |
         set -euo pipefail
+
+        # flitz publish rejects metadata over its caps, so over-long values are cut to fit.
+        trim() {
+          local var="$1" input="$2" max="$3" value="${!1}"
+          if (( ${#value} > max )); then
+            echo "::warning::${input} is ${#value} characters, over the ${max} flitz publish accepts; trimmed to ${max}"
+            printf -v "$var" '%s' "${value:0:max}"
+          fi
+        }
+        trim NAME name 120
+        trim VERSION_NAME version-name 64
+        trim COMMENT comment 1000
 
         args=(publish --yes --json)
 
