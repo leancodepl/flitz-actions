@@ -24,11 +24,11 @@ inputs:
   header:
     description: The comment's heading text.
     required: false
-    default: Flitz preview build
+    default: 📱 Flitz preview build
   message:
-    description: Markdown inserted below the landing-page link, e.g. which loader build opens the bundle.
+    description: Markdown inserted below the landing-page link, e.g. which loader build opens the bundle. Empty omits it.
     required: false
-    default: ""
+    default: Open it with a Flitz-enabled loader build.
   github-token:
     description: The token the comment is posted and cleaned up with. Needs pull-requests write permission.
     required: false

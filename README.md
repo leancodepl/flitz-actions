@@ -259,8 +259,8 @@ request carries one current preview comment per key, at the bottom of its timeli
 | `bundle-url` | *(empty)* | The bundle URL — the `bundle-url` output of `publish`. |
 | `id` | *(empty)* | The publish id — the `id` output of `publish`. |
 | `key` | `default` | Identifies the comment among the Flitz comments on one pull request. Letters, digits, `.`, `_`, or `-`. |
-| `header` | `Flitz preview build` | The comment's heading text. |
-| `message` | *(empty)* | Markdown inserted below the landing-page link, e.g. which loader build opens the bundle. |
+| `header` | `📱 Flitz preview build` | The comment's heading text. |
+| `message` | `Open it with a Flitz-enabled loader build.` | Markdown inserted below the landing-page link, e.g. which loader build opens the bundle. Empty omits it. |
 | `github-token` | `${{ github.token }}` | The token the comment is posted and cleaned up with. |
 
 | Output | Description |
@@ -305,8 +305,8 @@ Runs `install`, then `publish`, then `pr-comment`. It takes no `flitz-version`: 
 | `version-name` | *(empty)* | Forwarded to `publish`. |
 | `comment` | *(empty)* | Forwarded to `publish` — the publish record's comment. |
 | `pr-comment-key` | `default` | Forwarded to `pr-comment` as `key`. |
-| `pr-comment-header` | `Flitz preview build` | Forwarded to `pr-comment` as `header`. |
-| `pr-comment-message` | *(empty)* | Forwarded to `pr-comment` as `message`. |
+| `pr-comment-header` | `📱 Flitz preview build` | Forwarded to `pr-comment` as `header`. |
+| `pr-comment-message` | `Open it with a Flitz-enabled loader build.` | Forwarded to `pr-comment` as `message`. |
 | `github-token` | `${{ github.token }}` | Forwarded to `pr-comment`. |
 
 | Output | Description |

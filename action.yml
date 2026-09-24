@@ -73,11 +73,11 @@ inputs:
   pr-comment-header:
     description: The pull-request comment's heading text.
     required: false
-    default: Flitz preview build
+    default: 📱 Flitz preview build
   pr-comment-message:
-    description: Markdown inserted below the landing-page link in the pull-request comment.
+    description: Markdown inserted below the landing-page link in the pull-request comment. Empty omits it.
     required: false
-    default: ""
+    default: Open it with a Flitz-enabled loader build.
   github-token:
     description: The token the pull-request comment is posted and cleaned up with. Needs pull-requests write permission.
     required: false

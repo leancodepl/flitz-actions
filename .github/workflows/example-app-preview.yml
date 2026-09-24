@@ -51,5 +51,3 @@ jobs:
           name: "PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}"
           version-name: pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
           comment: ${{ github.event.pull_request.html_url }} | ${{ github.event.pull_request.head.ref }} @ ${{ github.event.pull_request.head.sha }} | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          pr-comment-header: 📱 Flitz preview build
-          pr-comment-message: Open it with a Flitz-enabled loader build.
