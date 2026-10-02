@@ -320,8 +320,10 @@ Runs `install`, then `publish`, then `pr-comment`. It takes no `flitz-version`: 
 | `comment-url` | The HTML URL of the pull-request comment. Empty on other events. |
 
 On a pull request event the combined action always posts the comment, so the job needs
-`pull-requests: write`. A comment failure after a successful publish fails the action; the publish
-outputs are already set, and a later step with `if: always()` can read them.
+`pull-requests: write`. It checks `pr-comment-key` and `gh` with the host, the pin, and the
+credential, so either fails before any download or build. A comment failure after a successful
+publish fails the action; the publish outputs are already set, and a later step with
+`if: always()` can read them.
 
 ## Failure modes
 

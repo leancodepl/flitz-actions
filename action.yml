@@ -136,6 +136,15 @@ runs:
         API_KEY: ${{ inputs.api-key }}
       run: bash "${GITHUB_ACTION_PATH}/scripts/check-credential.sh"
 
+    # Checked with the other inputs rather than before the comment, so a bad key or a missing gh
+    # fails the job before the build.
+    - name: Check the comment setup
+      if: github.event.pull_request
+      shell: bash
+      env:
+        KEY: ${{ inputs.pr-comment-key }}
+      run: bash "${GITHUB_ACTION_PATH}/scripts/pr-validate.sh"
+
     - name: Resolve release
       id: resolve-cli
       shell: bash
@@ -243,13 +252,6 @@ runs:
       if: ${{ !github.event.pull_request }}
       shell: bash
       run: echo "::notice::the ${GITHUB_EVENT_NAME} event is not a pull request; no Flitz preview comment was posted"
-
-    - name: Validate
-      if: github.event.pull_request
-      shell: bash
-      env:
-        KEY: ${{ inputs.pr-comment-key }}
-      run: bash "${GITHUB_ACTION_PATH}/scripts/pr-validate.sh"
 
     - name: Render the comment
       id: render
