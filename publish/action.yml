@@ -64,76 +64,32 @@ runs:
   using: composite
   steps:
     - name: Detect host
-      id: host
       shell: bash
-      run: |
-        set -euo pipefail
-
-        case "${RUNNER_OS}/${RUNNER_ARCH}" in
-          Linux/X64) host=linux-x64 ;;
-          macOS/ARM64) host=macos-arm64 ;;
-          *)
-            echo "unsupported runner ${RUNNER_OS}/${RUNNER_ARCH}" >&2
-            echo "  -> supported runners: Linux/X64 (linux-x64), macOS/ARM64 (macos-arm64)" >&2
-            exit 1
-            ;;
-        esac
-
-        echo "host=${host}" >> "$GITHUB_OUTPUT"
+      run: bash "${GITHUB_ACTION_PATH}/../scripts/detect-host.sh"
 
     - name: Require the flitz CLI
       shell: bash
-      run: |
-        set -euo pipefail
-
-        if ! command -v flitz > /dev/null 2>&1; then
-          echo "the flitz CLI is not on PATH" >&2
-          echo "  -> run the install-cli action first" >&2
-          exit 1
-        fi
+      run: bash "${GITHUB_ACTION_PATH}/../scripts/require-cli.sh"
 
     - name: Resolve the pin
       id: pin
       shell: bash
       env:
         FLITZ_PATH: ${{ inputs.flitz-path }}
-      run: |
-        set -euo pipefail
-
-        if [[ "$FLITZ_PATH" = /* ]]; then
-          pin="$FLITZ_PATH"
-        else
-          pin="${GITHUB_WORKSPACE}/${FLITZ_PATH}"
-        fi
-
-        if [[ ! -f "$pin" ]]; then
-          echo "${pin} is not a flitz.yaml" >&2
-          echo "  -> run 'flitz sdk use <tag>' in the project, or point flitz-path at its flitz.yaml" >&2
-          exit 1
-        fi
-
-        echo "dir=$(dirname "$pin")" >> "$GITHUB_OUTPUT"
+      run: bash "${GITHUB_ACTION_PATH}/../scripts/find-pin.sh"
 
     - name: Check credential
       shell: bash
       env:
         API_KEY: ${{ inputs.api-key }}
-      run: |
-        set -euo pipefail
-
-        if [[ -z "$API_KEY" ]]; then
-          echo "no Flitz credential was given" >&2
-          echo "  -> pass the organization API key as the api-key input, from a repository secret" >&2
-          exit 1
-        fi
-
-        echo "::add-mask::${API_KEY}"
+      run: bash "${GITHUB_ACTION_PATH}/../scripts/check-credential.sh"
 
     - name: Publish
       id: publish
       shell: bash
       working-directory: ${{ steps.pin.outputs.dir }}
       env:
+        FLITZ: flitz
         FLITZ_APIKEY: ${{ inputs.api-key }}
         APP: ${{ inputs.app }}
         TARGET: ${{ inputs.target }}
@@ -149,136 +105,11 @@ runs:
         PR_URL: ${{ github.event.pull_request.html_url }}
         PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      run: |
-        set -euo pipefail
-
-        # Empty metadata describes the run: the pull request when there is one, else the ref.
-        run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-        if [[ -n "$PR_NUMBER" ]]; then
-          NAME="${NAME:-PR #${PR_NUMBER}: ${PR_TITLE}}"
-          VERSION_NAME="${VERSION_NAME:-pr-${PR_NUMBER}-${PR_HEAD_SHA:0:7}}"
-          COMMENT="${COMMENT:-${PR_URL} | ${PR_HEAD_REF} @ ${PR_HEAD_SHA} | ${run_url}}"
-        else
-          NAME="${NAME:-${GITHUB_REF_NAME}}"
-          VERSION_NAME="${VERSION_NAME:-${GITHUB_REF_NAME}-${GITHUB_SHA:0:7}}"
-          COMMENT="${COMMENT:-${GITHUB_REF_NAME} @ ${GITHUB_SHA} | ${run_url}}"
-        fi
-
-        # flitz publish rejects metadata over its caps, so over-long values are cut to fit.
-        trim() {
-          local var="$1" input="$2" max="$3" value="${!1}"
-          if (( ${#value} > max )); then
-            echo "::warning::${input} is ${#value} characters, over the ${max} flitz publish accepts; trimmed to ${max}"
-            printf -v "$var" '%s' "${value:0:max}"
-          fi
-        }
-        trim NAME name 120
-        trim VERSION_NAME version-name 64
-        trim COMMENT comment 1000
-
-        args=(publish --yes --json)
-
-        if [[ -n "$APP" ]]; then
-          if [[ "$APP" = /* ]]; then
-            app="$APP"
-          else
-            app="${GITHUB_WORKSPACE}/${APP}"
-          fi
-          args+=(--app "$app")
-        fi
-
-        if [[ -n "$TARGET" ]]; then
-          args+=(--target "$TARGET")
-        fi
-
-        if [[ -n "$TARGET_PLATFORM" ]]; then
-          args+=(--target-platform "$TARGET_PLATFORM")
-        fi
-
-        while IFS= read -r define || [[ -n "$define" ]]; do
-          define="${define%$'\r'}"
-          if [[ -n "$define" ]]; then
-            args+=(--dart-define "$define")
-          fi
-        done <<< "$DART_DEFINES"
-
-        # The step runs from the project directory, so a relative path would otherwise resolve there.
-        while IFS= read -r file || [[ -n "$file" ]]; do
-          file="${file%$'\r'}"
-          if [[ -z "$file" ]]; then
-            continue
-          fi
-          if [[ "$file" != /* ]]; then
-            file="${GITHUB_WORKSPACE}/${file}"
-          fi
-          args+=(--dart-define-from-file "$file")
-        done <<< "$DART_DEFINE_FILES"
-
-        if [[ -n "$SCHEMA" ]]; then
-          args+=(--schema "$SCHEMA")
-        fi
-
-        if [[ -n "$NAME" ]]; then
-          args+=(--name "$NAME")
-        fi
-
-        if [[ -n "$VERSION_NAME" ]]; then
-          args+=(--version-name "$VERSION_NAME")
-        fi
-
-        if [[ -n "$COMMENT" ]]; then
-          args+=(--comment "$COMMENT")
-        fi
-
-        flitz "${args[@]}" > "${RUNNER_TEMP}/flitz-publish.json"
+      run: bash "${GITHUB_ACTION_PATH}/../scripts/publish.sh"
 
     - name: Expose the result
       id: result
       shell: bash
       env:
         TARGET: ${{ inputs.target }}
-      run: |
-        set -euo pipefail
-
-        result="${RUNNER_TEMP}/flitz-publish.json"
-
-        for field in id page_url deeplink bundle_url; do
-          if ! jq -e --arg f "$field" 'has($f) and (.[$f] | type == "string")' "$result" > /dev/null; then
-            echo "the publish result names no ${field}" >&2
-            exit 1
-          fi
-        done
-
-        id="$(jq -r '.id' "$result")"
-        page_url="$(jq -r '.page_url' "$result")"
-        deeplink="$(jq -r '.deeplink' "$result")"
-        bundle_url="$(jq -r '.bundle_url' "$result")"
-
-        {
-          echo "id<<FLITZ_OUTPUT_EOF"
-          echo "$id"
-          echo "FLITZ_OUTPUT_EOF"
-          echo "page-url<<FLITZ_OUTPUT_EOF"
-          echo "$page_url"
-          echo "FLITZ_OUTPUT_EOF"
-          echo "deeplink<<FLITZ_OUTPUT_EOF"
-          echo "$deeplink"
-          echo "FLITZ_OUTPUT_EOF"
-          echo "bundle-url<<FLITZ_OUTPUT_EOF"
-          echo "$bundle_url"
-          echo "FLITZ_OUTPUT_EOF"
-        } >> "$GITHUB_OUTPUT"
-
-        {
-          echo "### Flitz publish"
-          echo
-          echo "| | |"
-          echo "|---|---|"
-          echo "| Landing page | ${page_url} |"
-          echo "| Bundle | ${bundle_url} |"
-          echo "| Deeplink | \`${deeplink}\` |"
-          echo "| Publish id | \`${id}\` |"
-          if [[ -n "$TARGET" ]]; then
-            echo "| Entrypoint | \`${TARGET}\` |"
-          fi
-        } >> "$GITHUB_STEP_SUMMARY"
+      run: bash "${GITHUB_ACTION_PATH}/../scripts/publish-result.sh"
