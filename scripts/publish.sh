@@ -4,16 +4,19 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# The first line of the pushed commit's message; only a push event carries one.
+subject="${HEAD_COMMIT_MESSAGE%%$'\n'*}"
+subject="${subject%$'\r'}"
+
 # Empty metadata describes the run: the pull request when there is one, else the ref.
-run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 if [[ -n "$PR_NUMBER" ]]; then
   NAME="${NAME:-PR #${PR_NUMBER}: ${PR_TITLE}}"
   VERSION_NAME="${VERSION_NAME:-pr-${PR_NUMBER}-${PR_HEAD_SHA:0:7}}"
-  COMMENT="${COMMENT:-${PR_URL} | ${PR_HEAD_REF} @ ${PR_HEAD_SHA} | ${run_url}}"
+  COMMENT="${COMMENT:-${GITHUB_REPOSITORY}#${PR_NUMBER} ${PR_HEAD_REF} -> ${PR_BASE_REF} @ ${PR_HEAD_SHA:0:7} by ${GITHUB_ACTOR}}"
 else
   NAME="${NAME:-${GITHUB_REF_NAME}}"
   VERSION_NAME="${VERSION_NAME:-${GITHUB_REF_NAME}-${GITHUB_SHA:0:7}}"
-  COMMENT="${COMMENT:-${GITHUB_REF_NAME} @ ${GITHUB_SHA} | ${run_url}}"
+  COMMENT="${COMMENT:-${GITHUB_REPOSITORY} ${GITHUB_REF_NAME} @ ${GITHUB_SHA:0:7} by ${GITHUB_ACTOR}${subject:+: ${subject}}}"
 fi
 
 # The checkout is a detached commit, so flitz cannot read the branch itself. A track: in the
@@ -39,6 +42,15 @@ trim VERSION_NAME version-name 64
 trim COMMENT comment 1000
 trim TRACK track 255
 
+# The step runs from the project directory, so a relative path would otherwise resolve there.
+if [[ -n "$DIR" ]]; then
+  DIR="$(workspace_path "$DIR")"
+elif [[ -n "$APP" && -f "$(workspace_path "$APP")/pubspec.yaml" ]]; then
+  echo "the app input '${APP}' is an app directory, not an app key" >&2
+  echo "  -> pass the directory as the dir input" >&2
+  exit 1
+fi
+
 args=(publish --yes --json)
 
 # Forwards a flag only when its value is non-empty.
@@ -48,10 +60,6 @@ opt() {
   fi
 }
 
-# The step runs from the project directory, so a relative path would otherwise resolve there.
-if [[ -n "$DIR" ]]; then
-  DIR="$(workspace_path "$DIR")"
-fi
 opt --dir "$DIR"
 opt --app "$APP"
 opt --track "$TRACK"

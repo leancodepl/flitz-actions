@@ -46,8 +46,9 @@ jobs:
 ```
 
 A monorepo app whose pin is not at the repository root, built from a flavor entry point, with a
-comment note for reviewers. The publish `name`, `version-name`, and `comment` default to the pull
-request's number, title, commit, and run:
+comment note for reviewers. The publish lands on the track of the pull request's source branch, and
+its `name`, `version-name`, and `comment` default to the pull request's number, title, commit, and
+run:
 
 ```yaml
 - uses: leancodepl/flitz-actions@main
@@ -77,6 +78,8 @@ The parts composed by hand — a job that tests before it publishes and comments
     page-url: ${{ steps.flitz.outputs.page-url }}
     deeplink: ${{ steps.flitz.outputs.deeplink }}
     bundle-url: ${{ steps.flitz.outputs.bundle-url }}
+    track: ${{ steps.flitz.outputs.track }}
+    track-url: ${{ steps.flitz.outputs.track-url }}
     id: ${{ steps.flitz.outputs.id }}
 ```
 
@@ -218,7 +221,7 @@ Builds the project's app with `flitz publish` and exposes the result. Requires `
 | `schema` | *(empty)* | The deeplink URL scheme, forwarded as `--schema`. Empty uses the pin file's `schema:`, then `flitz`. |
 | `name` | *(empty)* | Display title for the publish, shown in the publish history, forwarded as `--name`. Empty uses `PR #<number>: <title>` on a pull request, else the ref name. Trimmed to 120 characters. |
 | `version-name` | *(empty)* | Version label for the publish, forwarded as `--version-name`. Empty uses `pr-<number>-<short sha>` on a pull request, else `<ref>-<short sha>`. Trimmed to 64 characters. |
-| `comment` | *(empty)* | Free-text comment for the publish, forwarded as `--comment`. Empty uses the pull-request URL (on a pull request), the ref and commit, and the run URL. Trimmed to 1000 characters. |
+| `comment` | *(empty)* | Free-text comment for the publish, forwarded as `--comment`. Empty uses `<repo>#<number> <head> -> <base> @ <short sha> by <actor>` on a pull request, else `<repo> <ref> @ <short sha> by <actor>: <commit subject>`; the subject comes from a push event only. Trimmed to 1000 characters. |
 
 | Output | Description |
 |---|---|
@@ -234,7 +237,8 @@ The action runs `flitz publish --yes --json` from the project directory, forward
 input only when it is non-empty. `dir` and each `dart-define-from-file` path resolve against the
 workspace root and reach the CLI as absolute paths. `target` stays relative to the project
 directory. The CLI reads `app:`, `track:`, and `schema:` from the `flitz.yaml` in the directory it
-runs from, also with `dir`.
+runs from, also with `dir`. `app` is a key, never a path: an `app` naming a directory that holds
+a `pubspec.yaml`, with `dir` empty, fails and names the `dir` input.
 
 A CI checkout is a detached commit, so the CLI cannot read the branch itself. With `track` empty and
 no `track:` in `flitz.yaml`, the action passes the pull request's head branch, or the pushed branch;
@@ -253,10 +257,12 @@ dart-define: |
   FEATURE_X=true
 ```
 
-`--yes` lets `publish` download the pinned SDK when it is not installed yet. On success the four
-outputs are the fields of the CLI's JSON result, and a summary table with the links — plus an
-`Entrypoint` row when `target` is set — is added to the job page. On failure the step fails with
-the CLI's own exit code and message, and no output is set.
+`--yes` lets `publish` download the pinned SDK when it is not installed yet, and create the app
+when `app` or the `app:` of `flitz.yaml` names a key the organization does not have yet. On success
+the outputs are the fields of the CLI's JSON result, and a summary table with the links — plus a
+row linking the track when the result names its page, and an `Entrypoint` row when `target` is
+set — is added to the job page. On failure the step fails with the CLI's own exit code and message,
+and no output is set.
 
 ## `pr-comment`
 
@@ -269,6 +275,8 @@ request carries one current preview comment per key, at the bottom of its timeli
 | `page-url` | *(required)* | The landing page URL — the `page-url` output of `publish`. |
 | `deeplink` | *(empty)* | The deeplink — the `deeplink` output of `publish`. |
 | `bundle-url` | *(empty)* | The bundle URL — the `bundle-url` output of `publish`. |
+| `track` | *(empty)* | The track's key — the `track` output of `publish`. |
+| `track-url` | *(empty)* | The track's landing page — the `track-url` output of `publish`. |
 | `id` | *(empty)* | The publish id — the `id` output of `publish`. |
 | `key` | `default` | Identifies the comment among the Flitz comments on one pull request. Letters, digits, `.`, `_`, or `-`. |
 | `header` | `📱 Flitz preview build` | The comment's heading text. |
@@ -280,8 +288,9 @@ request carries one current preview comment per key, at the bottom of its timeli
 | `comment-url` | The HTML URL of the posted comment. Empty when the action skipped. |
 
 The comment carries a heading, a bold link to the landing page, the `message`, and a collapsed
-**Details** block with the deeplink, the bundle URL, the publish id, and the pull request's head
-commit. A row whose input is empty is left out. The body comes from
+**Details** block with the deeplink, the bundle URL, a link to the track's landing page, the
+publish id, and the pull request's head commit. A row whose input is empty is left out; the track
+row needs both `track` and `track-url`. The body comes from
 [`pr-comment/comment.md`](pr-comment/comment.md).
 
 - **Replacing.** The new comment is posted first. Older comments by the same author carrying the
@@ -366,10 +375,11 @@ publish fails the action; the publish outputs are already set, and a later step 
 | Credential rejected, or the organization's license inactive | `flitz sdk install`, `flitz publish` | The CLI's not-authorized error, exit 3. |
 | Release carries no SDK archive for the detected host | `flitz sdk install`, `flitz publish` | The CLI's configuration error naming the tag and the host, exit 1. |
 | SDK archive checksum mismatch | `flitz sdk install`, `flitz publish` | The CLI's service error naming both digests, exit 4; the cache is left untouched. |
-| `app` holds no Flutter application, or `schema` invalid | `flitz publish` | The CLI's usage error naming the path, the flag, or the field, exit 1. |
+| `app` names a directory holding a `pubspec.yaml`, and `dir` is empty | `publish` | Fails naming the value and the `dir` input. |
+| `dir` holds no Flutter app, or `app`, `track`, or `schema` invalid | `flitz publish` | The CLI's usage error naming the path, the value, or its source, exit 1. |
 | Kernel, bytecode, or packaging failure, including a `target` or a `dart-define-from-file` path that names no file | `flitz publish` | The CLI's build error naming the failing tool, exit 5. |
 | Bundle or page upload failed, or the write-once destination occupied | `flitz publish` | The CLI's service error, exit 4; a failed page upload names the landed bundle URL. No output is set. |
-| `name`, `version-name`, or `comment` over its cap | `publish` | Logs a warning naming the input and its length, trims it to the cap, and continues. |
+| `track`, `name`, `version-name`, or `comment` over its cap | `publish` | Logs a warning naming the input and its length, trims it to the cap, and continues. |
 | Publish result missing a field | `publish` | Fails naming the field. |
 | Event is not a pull request | `pr-comment` | Logs a notice naming the event, posts nothing, and succeeds. |
 | `page-url` empty | `pr-comment` | Fails naming the input and the `publish` output that supplies it. |

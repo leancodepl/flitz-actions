@@ -3,23 +3,28 @@
 set -euo pipefail
 
 result="${RUNNER_TEMP}/flitz-publish.json"
-fields=(id page_url deeplink bundle_url)
 
-for field in "${fields[@]}"; do
-  if ! value="$(jq -er --arg f "$field" '.[$f] | strings' "$result")"; then
-    echo "the publish result names no ${field}" >&2
+# Prints one string field of the result, failing when the result names none.
+field() {
+  if ! jq -er "${1} | strings" "$result"; then
+    echo "the publish result names no ${1#.}" >&2
     exit 1
   fi
-  printf -v "$field" '%s' "$value"
-done
+}
+
+id="$(field .id)"
+page_url="$(field .page_url)"
+deeplink="$(field .deeplink)"
+bundle_url="$(field .bundle_url)"
 
 # The app and the track the build landed on; empty when the result does not name them.
 app="$(jq -r '.app // empty' "$result")"
 track="$(jq -r '.track // empty' "$result")"
 track_url="$(jq -r '.track_url // empty' "$result")"
 
-for field in "${fields[@]}" app track track_url; do
-  printf '%s<<FLITZ_OUTPUT_EOF\n%s\nFLITZ_OUTPUT_EOF\n' "${field//_/-}" "${!field}"
+for output in id page-url deeplink bundle-url app track track-url; do
+  var="${output//-/_}"
+  printf '%s<<FLITZ_OUTPUT_EOF\n%s\nFLITZ_OUTPUT_EOF\n' "$output" "${!var}"
 done >> "$GITHUB_OUTPUT"
 
 {

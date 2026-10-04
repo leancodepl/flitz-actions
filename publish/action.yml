@@ -46,7 +46,7 @@ inputs:
     required: false
     default: ""
   comment:
-    description: Free-text comment for the publish, forwarded as --comment. Empty uses the pull-request URL (on a pull request), the ref and commit, and the run URL. Trimmed to 1000 characters.
+    description: Free-text comment for the publish, forwarded as --comment. Empty uses the repository and pull request number with its branches (on a pull request), else the repository and ref with the pushed commit's subject; then the short commit and the actor. Trimmed to 1000 characters.
     required: false
     default: ""
 
@@ -116,9 +116,10 @@ runs:
         COMMENT: ${{ inputs.comment }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
         PR_TITLE: ${{ github.event.pull_request.title }}
-        PR_URL: ${{ github.event.pull_request.html_url }}
         PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
       run: bash "${GITHUB_ACTION_PATH}/../scripts/publish.sh"
 
     - name: Expose the result
