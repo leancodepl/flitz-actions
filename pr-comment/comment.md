@@ -9,6 +9,7 @@
 
 - Deeplink: `{{DEEPLINK}}`
 - Bundle: {{BUNDLE_URL}}
+- Track: [{{TRACK_NAME}}]({{TRACK_URL}}) — always offers the track's latest publish
 - Publish id: `{{ID}}`
 - Commit: `{{HEAD_SHA}}`
 

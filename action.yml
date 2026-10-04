@@ -31,16 +31,20 @@ inputs:
     description: Whether to restore and save the pub dependency cache.
     required: false
     default: "true"
-  app:
-    description: The Flutter application directory, forwarded as --app. Empty builds the app at the pin file's directory.
+  dir:
+    description: The Flutter app directory, forwarded as --dir. Relative to the workspace root. Empty builds the app at the pin file's directory.
     required: false
     default: ""
   target:
     description: The Dart entry-point file, relative to the app directory, forwarded as --target. Empty builds lib/main.dart.
     required: false
     default: ""
-  target-platform:
-    description: Forwarded as --target-platform. Empty uses the CLI's default for the build host.
+  app:
+    description: The app key, forwarded as --app. Empty uses flitz.yaml app:, then the pubspec name.
+    required: false
+    default: ""
+  track:
+    description: The track, forwarded as --track. Empty uses the pull request's source branch on a pull request, else the ref name. Always overrides flitz.yaml track:. Trimmed to 255 characters.
     required: false
     default: ""
   dart-define:
@@ -52,7 +56,7 @@ inputs:
     required: false
     default: ""
   schema:
-    description: The deeplink URL scheme, forwarded as --schema. Empty uses the CLI's default, flitz.
+    description: The deeplink URL scheme, forwarded as --schema. Empty uses flitz.yaml schema:, then flitz.
     required: false
     default: ""
   name:
@@ -64,7 +68,7 @@ inputs:
     required: false
     default: ""
   comment:
-    description: Free-text comment for the publish, forwarded as --comment. Empty uses the pull-request URL (on a pull request), the ref and commit, and the run URL. Trimmed to 1000 characters.
+    description: Free-text comment for the publish, forwarded as --comment. Empty uses the repository and pull request number with its branches (on a pull request), else the repository and ref with the pushed commit's subject; then the short commit and the actor. Trimmed to 1000 characters.
     required: false
     default: ""
   pr-comment-key:
@@ -109,6 +113,21 @@ outputs:
   bundle-url:
     description: The .flitz bundle's download URL.
     value: ${{ steps.result.outputs.bundle-url }}
+  app-key:
+    description: The key of the app the publish belongs to.
+    value: ${{ steps.result.outputs.app-key }}
+  app-name:
+    description: The display name of the app the publish belongs to.
+    value: ${{ steps.result.outputs.app-name }}
+  track-key:
+    description: The key of the track the publish belongs to.
+    value: ${{ steps.result.outputs.track-key }}
+  track-name:
+    description: The display name of the track the publish belongs to.
+    value: ${{ steps.result.outputs.track-name }}
+  track-url:
+    description: The track's page, which always offers the track's latest publish.
+    value: ${{ steps.result.outputs.track-url }}
   comment-url:
     description: The HTML URL of the pull-request comment. Empty when the event is not a pull request.
     value: ${{ steps.post.outputs.comment-url }}
@@ -225,9 +244,10 @@ runs:
       env:
         FLITZ: ${{ steps.install-cli.outputs.path }}
         FLITZ_APIKEY: ${{ inputs.api-key }}
-        APP: ${{ inputs.app }}
+        DIR: ${{ inputs.dir }}
         TARGET: ${{ inputs.target }}
-        TARGET_PLATFORM: ${{ inputs.target-platform }}
+        APP: ${{ inputs.app }}
+        TRACK: ${{ inputs.track }}
         DART_DEFINES: ${{ inputs.dart-define }}
         DART_DEFINE_FILES: ${{ inputs.dart-define-from-file }}
         SCHEMA: ${{ inputs.schema }}
@@ -236,9 +256,10 @@ runs:
         COMMENT: ${{ inputs.comment }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
         PR_TITLE: ${{ github.event.pull_request.title }}
-        PR_URL: ${{ github.event.pull_request.html_url }}
         PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
       run: bash "${GITHUB_ACTION_PATH}/scripts/publish.sh"
 
     - name: Expose the result
@@ -264,6 +285,8 @@ runs:
         MESSAGE: ${{ inputs.pr-comment-message }}
         DEEPLINK: ${{ steps.result.outputs.deeplink }}
         BUNDLE_URL: ${{ steps.result.outputs.bundle-url }}
+        TRACK_NAME: ${{ steps.result.outputs.track-name }}
+        TRACK_URL: ${{ steps.result.outputs.track-url }}
         ID: ${{ steps.result.outputs.id }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: bash "${GITHUB_ACTION_PATH}/scripts/pr-render.sh"

@@ -19,6 +19,8 @@ jq -Rrs \
   --arg MESSAGE "$MESSAGE" \
   --arg DEEPLINK "$DEEPLINK" \
   --arg BUNDLE_URL "$BUNDLE_URL" \
+  --arg TRACK_NAME "$TRACK_NAME" \
+  --arg TRACK_URL "$TRACK_URL" \
   --arg ID "$ID" \
   --arg HEAD_SHA "$HEAD_SHA" \
   '

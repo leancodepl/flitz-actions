@@ -13,6 +13,14 @@ inputs:
     description: The bundle URL — the bundle-url output of the publish action.
     required: false
     default: ""
+  track-name:
+    description: The track's display name — the track-name output of the publish action.
+    required: false
+    default: ""
+  track-url:
+    description: The track's page — the track-url output of the publish action.
+    required: false
+    default: ""
   id:
     description: The publish id — the id output of the publish action.
     required: false
@@ -65,6 +73,8 @@ runs:
         MESSAGE: ${{ inputs.message }}
         DEEPLINK: ${{ inputs.deeplink }}
         BUNDLE_URL: ${{ inputs.bundle-url }}
+        TRACK_NAME: ${{ inputs.track-name }}
+        TRACK_URL: ${{ inputs.track-url }}
         ID: ${{ inputs.id }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: bash "${GITHUB_ACTION_PATH}/../scripts/pr-render.sh"
