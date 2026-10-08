@@ -37,7 +37,7 @@ jobs:
     if: github.event.pull_request.head.repo.full_name == github.repository
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Installs the CLI and the SDK pinned in example_app/flitz.yaml, caches
       # the SDK and the pub cache, runs `flitz publish` from example_app/, and
