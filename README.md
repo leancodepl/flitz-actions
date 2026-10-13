@@ -39,7 +39,7 @@ jobs:
   preview:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: leancodepl/flitz-actions@main
         with:
           api-key: ${{ secrets.FLITZ_APIKEY }}

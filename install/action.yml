@@ -241,7 +241,7 @@ runs:
     - name: Restore the SDK cache
       id: cache
       if: inputs.cache == 'true'
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ${{ steps.sdkpath.outputs.path }}
         key: flitz-sdk-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve-sdk.outputs.version }}
@@ -313,7 +313,7 @@ runs:
 
     - name: Cache pub dependencies
       if: inputs.pub-cache == 'true' && steps.pubscope.outputs.skip != 'true'
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ${{ steps.pubscope.outputs.path }}
         key: ${{ steps.pubscope.outputs.key }}
