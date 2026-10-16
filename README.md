@@ -37,7 +37,7 @@ permissions:
   pull-requests: write
 jobs:
   preview:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - uses: leancodepl/flitz-actions@main
@@ -85,7 +85,7 @@ A job that pins the CLI version and installs the halves separately:
 ```yaml
 - uses: leancodepl/flitz-actions/install-cli@main
   with:
-    cli-version: 0.1.0
+    cli-version: 0.6.0
 - uses: leancodepl/flitz-actions/install-sdk@main
   with:
     api-key: ${{ secrets.FLITZ_APIKEY }}
@@ -209,12 +209,13 @@ Builds the project's app with `flitz publish` and exposes the result. Requires `
 |---|---|---|
 | `api-key` | *(required)* | The organization API key. |
 | `flitz-path` | `flitz.yaml` | The project's pin file. The CLI runs from the project directory. |
-| `app` | *(empty)* | The Flutter application directory, forwarded as `--app`. Empty builds the app in the project directory. |
-| `target` | *(empty)* | The Dart entry-point file, relative to the app directory, forwarded as `--target`. Empty builds `lib/main.dart`. |
-| `target-platform` | *(empty)* | Forwarded as `--target-platform`. Empty uses the CLI's default for the build host. |
+| `dir` | *(empty)* | The Flutter project directory, forwarded as `--dir`. Empty builds the project in the pin file's directory. |
+| `app` | *(empty)* | The app key, forwarded as `--app`. Empty uses the pin file's `app:`, then the pubspec name. A key the organization does not have yet is created. |
+| `track` | *(empty)* | The track, forwarded as `--track`. Empty uses the pin file's `track:`, then the pull request's head branch or the pushed branch. Trimmed to 255 characters. |
+| `target` | *(empty)* | The Dart entry-point file, relative to the project directory, forwarded as `--target`. Empty builds `lib/main.dart`. |
 | `dart-define` | *(empty)* | Compile-time constants, one `KEY=VALUE` per line, each forwarded as one `--dart-define`. |
 | `dart-define-from-file` | *(empty)* | `.json` or `.env` constant files, one path per line, each forwarded as one `--dart-define-from-file`. |
-| `schema` | *(empty)* | The deeplink URL scheme, forwarded as `--schema`. Empty uses `flitz`. |
+| `schema` | *(empty)* | The deeplink URL scheme, forwarded as `--schema`. Empty uses the pin file's `schema:`, then `flitz`. |
 | `name` | *(empty)* | Display title for the publish, shown in the publish history, forwarded as `--name`. Empty uses `PR #<number>: <title>` on a pull request, else the ref name. Trimmed to 120 characters. |
 | `version-name` | *(empty)* | Version label for the publish, forwarded as `--version-name`. Empty uses `pr-<number>-<short sha>` on a pull request, else `<ref>-<short sha>`. Trimmed to 64 characters. |
 | `comment` | *(empty)* | Free-text comment for the publish, forwarded as `--comment`. Empty uses the pull-request URL (on a pull request), the ref and commit, and the run URL. Trimmed to 1000 characters. |
@@ -225,10 +226,23 @@ Builds the project's app with `flitz publish` and exposes the result. Requires `
 | `page-url` | The landing page's download URL. |
 | `deeplink` | The `<schema>://download?url=…` deeplink the landing page and the QR encode. |
 | `bundle-url` | The `.flitz` bundle's download URL. |
+| `app` | The key of the app the build was published to. |
+| `track` | The key of the track the build was published to. |
+| `track-url` | The track's landing page, which always opens its newest build. |
 
 The action runs `flitz publish --yes --json` from the project directory, forwarding each optional
-input only when it is non-empty. `app` and each `dart-define-from-file` path resolve against the
-workspace root and reach the CLI as absolute paths. `target` stays relative to the app directory.
+input only when it is non-empty. `dir` and each `dart-define-from-file` path resolve against the
+workspace root and reach the CLI as absolute paths. `target` stays relative to the project
+directory. The CLI reads `app:`, `track:`, and `schema:` from the `flitz.yaml` in the directory it
+runs from, also with `dir`.
+
+A CI checkout is a detached commit, so the CLI cannot read the branch itself. With `track` empty and
+no `track:` in `flitz.yaml`, the action passes the pull request's head branch, or the pushed branch;
+a tag or other ref publishes to the app's `Unassigned` track. The CLI turns a branch name into a
+track key, so `feature/login` lands on `feature-login`.
+
+`publish` needs CLI 0.6.0 or newer: older versions take `--app` as a directory and have no `--dir`
+or `--track`.
 
 `dart-define` and `dart-define-from-file` take one value per line, in order. Empty lines are
 skipped; nothing else is trimmed, and a value is never split on commas:
@@ -293,9 +307,10 @@ Runs `install`, then `publish`, then `pr-comment`. It takes no `flitz-version`: 
 | `api-key` | *(required)* | Forwarded to `install` and `publish`. |
 | `cache` | `true` | Forwarded to `install` as its SDK-cache switch. |
 | `pub-cache` | `true` | Forwarded to `install`. |
+| `dir` | *(empty)* | Forwarded to `publish`. |
 | `app` | *(empty)* | Forwarded to `publish`. |
+| `track` | *(empty)* | Forwarded to `publish`. |
 | `target` | *(empty)* | Forwarded to `publish`. |
-| `target-platform` | *(empty)* | Forwarded to `publish`. |
 | `dart-define` | *(empty)* | Forwarded to `publish`. |
 | `dart-define-from-file` | *(empty)* | Forwarded to `publish`. |
 | `schema` | *(empty)* | Forwarded to `publish`. |
@@ -317,6 +332,9 @@ Runs `install`, then `publish`, then `pr-comment`. It takes no `flitz-version`: 
 | `page-url` | The landing page's download URL. |
 | `deeplink` | The deeplink the landing page and the QR encode. |
 | `bundle-url` | The `.flitz` bundle's download URL. |
+| `app` | The key of the app the build was published to. |
+| `track` | The key of the track the build was published to. |
+| `track-url` | The track's landing page, which always opens its newest build. |
 | `comment-url` | The HTML URL of the pull-request comment. Empty on other events. |
 
 On a pull request event the combined action always posts the comment, so the job needs

@@ -9,16 +9,20 @@ inputs:
     description: The project's pin file. Relative to the workspace root; flitz publish runs from its directory.
     required: false
     default: flitz.yaml
+  dir:
+    description: The Flutter project directory, forwarded as --dir. Relative to the workspace root. Empty builds the project at the pin file's directory.
+    required: false
+    default: ""
   app:
-    description: The Flutter application directory, forwarded as --app. Empty builds the app at the pin file's directory.
+    description: The app key, forwarded as --app. Empty uses the pin file's app:, then the pubspec name. A key the organization does not have yet is created.
+    required: false
+    default: ""
+  track:
+    description: The track, forwarded as --track. Empty uses the pin file's track:, then the pull request's head branch or the pushed branch. Trimmed to 255 characters.
     required: false
     default: ""
   target:
-    description: The Dart entry-point file, relative to the app directory, forwarded as --target. Empty builds lib/main.dart.
-    required: false
-    default: ""
-  target-platform:
-    description: Forwarded as --target-platform. Empty uses the CLI's default for the build host.
+    description: The Dart entry-point file, relative to the project directory, forwarded as --target. Empty builds lib/main.dart.
     required: false
     default: ""
   dart-define:
@@ -30,7 +34,7 @@ inputs:
     required: false
     default: ""
   schema:
-    description: The deeplink URL scheme, forwarded as --schema. Empty uses the CLI's default, flitz.
+    description: The deeplink URL scheme, forwarded as --schema. Empty uses the pin file's schema:, then flitz.
     required: false
     default: ""
   name:
@@ -59,6 +63,15 @@ outputs:
   bundle-url:
     description: The .flitz bundle's download URL.
     value: ${{ steps.result.outputs.bundle-url }}
+  app:
+    description: The key of the app the build was published to.
+    value: ${{ steps.result.outputs.app }}
+  track:
+    description: The key of the track the build was published to.
+    value: ${{ steps.result.outputs.track }}
+  track-url:
+    description: The track's landing page, which always opens its newest build.
+    value: ${{ steps.result.outputs.track-url }}
 
 runs:
   using: composite
@@ -135,9 +148,10 @@ runs:
       working-directory: ${{ steps.pin.outputs.dir }}
       env:
         FLITZ_APIKEY: ${{ inputs.api-key }}
+        DIR: ${{ inputs.dir }}
         APP: ${{ inputs.app }}
+        TRACK: ${{ inputs.track }}
         TARGET: ${{ inputs.target }}
-        TARGET_PLATFORM: ${{ inputs.target-platform }}
         DART_DEFINES: ${{ inputs.dart-define }}
         DART_DEFINE_FILES: ${{ inputs.dart-define-from-file }}
         SCHEMA: ${{ inputs.schema }}
@@ -164,6 +178,16 @@ runs:
           COMMENT="${COMMENT:-${GITHUB_REF_NAME} @ ${GITHUB_SHA} | ${run_url}}"
         fi
 
+        # The checkout is a detached commit, so flitz cannot read the branch itself. A track: in
+        # the flitz.yaml flitz reads from this directory wins over the branch.
+        if [[ -z "$TRACK" ]] && ! grep -Eq '^track:[[:space:]]*[^[:space:]#]' flitz.yaml; then
+          if [[ -n "$PR_HEAD_REF" ]]; then
+            TRACK="$PR_HEAD_REF"
+          elif [[ "$GITHUB_REF_TYPE" == "branch" ]]; then
+            TRACK="$GITHUB_REF_NAME"
+          fi
+        fi
+
         # flitz publish rejects metadata over its caps, so over-long values are cut to fit.
         trim() {
           local var="$1" input="$2" max="$3" value="${!1}"
@@ -175,24 +199,29 @@ runs:
         trim NAME name 120
         trim VERSION_NAME version-name 64
         trim COMMENT comment 1000
+        trim TRACK track 255
 
         args=(publish --yes --json)
 
-        if [[ -n "$APP" ]]; then
-          if [[ "$APP" = /* ]]; then
-            app="$APP"
+        if [[ -n "$DIR" ]]; then
+          if [[ "$DIR" = /* ]]; then
+            dir="$DIR"
           else
-            app="${GITHUB_WORKSPACE}/${APP}"
+            dir="${GITHUB_WORKSPACE}/${DIR}"
           fi
-          args+=(--app "$app")
+          args+=(--dir "$dir")
+        fi
+
+        if [[ -n "$APP" ]]; then
+          args+=(--app "$APP")
+        fi
+
+        if [[ -n "$TRACK" ]]; then
+          args+=(--track "$TRACK")
         fi
 
         if [[ -n "$TARGET" ]]; then
           args+=(--target "$TARGET")
-        fi
-
-        if [[ -n "$TARGET_PLATFORM" ]]; then
-          args+=(--target-platform "$TARGET_PLATFORM")
         fi
 
         while IFS= read -r define || [[ -n "$define" ]]; do
@@ -253,6 +282,9 @@ runs:
         page_url="$(jq -r '.page_url' "$result")"
         deeplink="$(jq -r '.deeplink' "$result")"
         bundle_url="$(jq -r '.bundle_url' "$result")"
+        app="$(jq -r '.app // empty' "$result")"
+        track="$(jq -r '.track // empty' "$result")"
+        track_url="$(jq -r '.track_url // empty' "$result")"
 
         {
           echo "id<<FLITZ_OUTPUT_EOF"
@@ -267,6 +299,15 @@ runs:
           echo "bundle-url<<FLITZ_OUTPUT_EOF"
           echo "$bundle_url"
           echo "FLITZ_OUTPUT_EOF"
+          echo "app<<FLITZ_OUTPUT_EOF"
+          echo "$app"
+          echo "FLITZ_OUTPUT_EOF"
+          echo "track<<FLITZ_OUTPUT_EOF"
+          echo "$track"
+          echo "FLITZ_OUTPUT_EOF"
+          echo "track-url<<FLITZ_OUTPUT_EOF"
+          echo "$track_url"
+          echo "FLITZ_OUTPUT_EOF"
         } >> "$GITHUB_OUTPUT"
 
         {
@@ -275,6 +316,9 @@ runs:
           echo "| | |"
           echo "|---|---|"
           echo "| Landing page | ${page_url} |"
+          if [[ -n "$track_url" ]]; then
+            echo "| Track \`${track}\` of \`${app}\` | ${track_url} |"
+          fi
           echo "| Bundle | ${bundle_url} |"
           echo "| Deeplink | \`${deeplink}\` |"
           echo "| Publish id | \`${id}\` |"

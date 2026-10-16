@@ -31,7 +31,7 @@ jobs:
   preview:
     name: Publish preview
     # The Flitz toolchain is published for linux-x64 and macos-arm64 only.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     # Fork PRs have no access to FLITZ_APIKEY.
     if: github.event.pull_request.head.repo.full_name == github.repository
