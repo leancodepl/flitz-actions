@@ -37,7 +37,7 @@ permissions:
   pull-requests: write
 jobs:
   preview:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - uses: leancodepl/flitz-actions@main
